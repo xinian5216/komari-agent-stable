@@ -122,11 +122,15 @@ download_url() {
 }
 
 verify_checksum() {
-    local url="$1" file="$2" expected actual
+    local url="$1" file="$2" asset="$3" expected actual
     command -v sha256sum >/dev/null 2>&1 || { warn "sha256sum 不可用，跳过校验"; return 0; }
     expected=$(curl -fsSL -m 20 "${url}.sha256" 2>/dev/null | awk '{print $1}' | head -1)
+    if [ -z "$expected" ] && [ -n "$asset" ]; then
+        expected=$(curl -fsSL -m 20 "$(dirname "$url")/SHA256SUMS" 2>/dev/null \
+            | awk -v n="$asset" '$2 == n || $2 == "*" n {print $1}' | head -1)
+    fi
     if [ -z "$expected" ]; then
-        warn "该版本未提供 .sha256，跳过校验"
+        warn "该版本未提供 .sha256 / SHA256SUMS，跳过校验"
         return 0
     fi
     actual=$(sha256sum "$file" | awk '{print $1}')
@@ -188,7 +192,7 @@ main() {
         rm -f "$tmp"
         die "下载失败：$url"
     fi
-    verify_checksum "$url" "$tmp" || { rm -f "$tmp"; die "校验未通过，未做任何改动"; }
+    verify_checksum "$url" "$tmp" "$asset" || { rm -f "$tmp"; die "校验未通过，未做任何改动"; }
     chmod +x "$tmp"
 
     step "停止服务并替换二进制（启动参数保持原样）"
