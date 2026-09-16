@@ -3,13 +3,19 @@ name: Release Binaries
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的 release tag（重发/补发校验和时使用，例如 v1.5.10-stable.0）"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   build-and-attach:
-    if: ${{ !github.event.release.prerelease }}
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -43,7 +49,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
-          VERSION: ${{ github.event.release.tag_name }}
+          VERSION: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           # tag 用 v1.5.10-stable.0，二进制内显示的版本去掉 v 前缀
           VERSION="${VERSION#v}"
@@ -66,12 +72,12 @@ jobs:
           elif [ "${{ matrix.goos }}" = "darwin" ]; then
             true
           fi
-          gh release upload ${{ github.event.release.tag_name }} $BINARY_NAME --repo ${{ github.repository }}
+          gh release upload "${{ github.event.release.tag_name || inputs.tag }}" $BINARY_NAME --repo ${{ github.repository }}
         shell: bash
 
   checksums:
     needs: build-and-attach
-    if: ${{ !github.event.release.prerelease }}
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -82,7 +88,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist && cd dist
-          gh release download ${{ github.event.release.tag_name }} \
+          gh release download "${{ github.event.release.tag_name || inputs.tag }}" \
             --repo ${{ github.repository }} \
             --pattern 'komari-agent-*' --clobber
           ls -la
@@ -101,5 +107,5 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          gh release upload ${{ github.event.release.tag_name }} \
+          gh release upload "${{ github.event.release.tag_name || inputs.tag }}" \
             dist/SHA256SUMS dist/*.sha256 --clobber --repo ${{ github.repository }}
