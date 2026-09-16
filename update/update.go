@@ -20,7 +20,10 @@ import (
 
 var (
 	CurrentVersion string = "0.0.1"
-	Repo           string = "komari-monitor/komari-agent"
+	// Repo is the GitHub repository the agent self-updates from.
+	// Komari Stable maintains its own mirror, so the default points at the fork;
+	// it can still be overridden at build time via -ldflags.
+	Repo string = "xinian5216/komari-agent-stable"
 )
 
 const (

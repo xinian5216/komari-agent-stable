@@ -1,5 +1,16 @@
 #!/bin/sh
 
+# ---------------------------------------------------------------------------
+# Release source (fork-owned). Owner/repo are defined HERE ONLY — do not
+# hardcode the slug anywhere else in this script.
+# All four values can be overridden through environment variables.
+# ---------------------------------------------------------------------------
+REPO_OWNER="${KOMARI_AGENT_REPO_OWNER:-xinian5216}"
+REPO_NAME="${KOMARI_AGENT_REPO_NAME:-komari-agent-stable}"
+GITHUB_API_BASE="${KOMARI_AGENT_API_BASE:-https://api.github.com}"
+GITHUB_RELEASE_BASE="${KOMARI_AGENT_RELEASE_BASE:-https://github.com}"
+REPO_SLUG="${REPO_OWNER}/${REPO_NAME}"
+
 # Color definitions for terminal output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -322,7 +333,7 @@ log_info "Detected OS: ${GREEN}$os_name${NC}, Architecture: ${GREEN}$arch${NC}"
 file_name="komari-agent-${os_name}-${arch}"
 
 resolve_snapshot_version() {
-    snapshot_api_url="https://api.github.com/repos/komari-monitor/komari-agent/releases?per_page=100"
+    snapshot_api_url="${GITHUB_API_BASE}/repos/${REPO_SLUG}/releases?per_page=100"
     if [ -n "$github_proxy" ]; then
         snapshot_api_urls="${github_proxy}/${snapshot_api_url} ${snapshot_api_url}"
     else
@@ -383,10 +394,10 @@ fi
 
 if [ -n "$github_proxy" ]; then
     # Use proxy for GitHub releases
-    download_url="${github_proxy}/https://github.com/komari-monitor/komari-agent/releases/${download_path}/${file_name}"
+    download_url="${github_proxy}/${GITHUB_RELEASE_BASE}/${REPO_SLUG}/releases/${download_path}/${file_name}"
 else
     # Direct access to GitHub releases
-    download_url="https://github.com/komari-monitor/komari-agent/releases/${download_path}/${file_name}"
+    download_url="${GITHUB_RELEASE_BASE}/${REPO_SLUG}/releases/${download_path}/${file_name}"
 fi
 
 log_step "Creating installation directory: ${GREEN}$target_dir${NC}"

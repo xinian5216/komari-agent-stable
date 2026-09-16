@@ -15,6 +15,17 @@ $GitHubProxy = ""
 $KomariArgs = @()
 $InstallVersion = ""
 
+# ---------------------------------------------------------------------------
+# Release source (fork-owned). Owner/repo are defined HERE ONLY — do not
+# hardcode the slug anywhere else in this script.
+# All values can be overridden through environment variables.
+# ---------------------------------------------------------------------------
+$RepoOwner = if ($env:KOMARI_AGENT_REPO_OWNER) { $env:KOMARI_AGENT_REPO_OWNER } else { "xinian5216" }
+$RepoName = if ($env:KOMARI_AGENT_REPO_NAME) { $env:KOMARI_AGENT_REPO_NAME } else { "komari-agent-stable" }
+$GitHubApiBase = if ($env:KOMARI_AGENT_API_BASE) { $env:KOMARI_AGENT_API_BASE } else { "https://api.github.com" }
+$GitHubReleaseBase = if ($env:KOMARI_AGENT_RELEASE_BASE) { $env:KOMARI_AGENT_RELEASE_BASE } else { "https://github.com" }
+$RepoSlug = "$RepoOwner/$RepoName"
+
 # Parse script arguments
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
@@ -209,7 +220,7 @@ Uninstall-Previous
 function Get-LatestSnapshotVersion {
     param([Parameter(Mandatory = $true)][string]$AssetName)
 
-    $ApiUrl = "https://api.github.com/repos/komari-monitor/komari-agent/releases?per_page=100"
+    $ApiUrl = "$GitHubApiBase/repos/$RepoSlug/releases?per_page=100"
     $ApiUrls = @($ApiUrl)
     if ($GitHubProxy -ne "") {
         $ApiUrls = @("$GitHubProxy/$ApiUrl", $ApiUrl)
@@ -267,7 +278,7 @@ if ($InstallVersion -ne "") {
     }
 }
 else {
-    $ApiUrl = "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest"
+    $ApiUrl = "$GitHubApiBase/repos/$RepoSlug/releases/latest"
     try {
         Log-Step "Fetching latest release version from GitHub API..."
         $release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
@@ -283,7 +294,7 @@ Log-Success "Installing Komari Agent version: $versionToInstall"
 
 # Construct download URL
 $BinaryName = "komari-agent-windows-$arch.exe"
-$DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/https://github.com/komari-monitor/komari-agent/releases/download/$versionToInstall/$BinaryName" } else { "https://github.com/komari-monitor/komari-agent/releases/download/$versionToInstall/$BinaryName" }
+$DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/$GitHubReleaseBase/$RepoSlug/releases/download/$versionToInstall/$BinaryName" } else { "$GitHubReleaseBase/$RepoSlug/releases/download/$versionToInstall/$BinaryName" }
 
 # Download and install
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
