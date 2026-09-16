@@ -28,8 +28,10 @@ jobs:
         goarch: [amd64, arm64, 386, arm]
 
     steps:
-      - name: Checkout code
+      - name: Checkout the released tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Set up Go
         uses: actions/setup-go@v5
