@@ -43,6 +43,8 @@ jobs:
           CGO_ENABLED: 0
           VERSION: ${{ github.event.release.tag_name }}
         run: |
+          # tag 用 v1.5.10-stable.0，二进制内显示的版本去掉 v 前缀
+          VERSION="${VERSION#v}"
           BINARY_NAME=komari-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           if [ "${{ matrix.goos }}" = "windows" ]; then
             BINARY_NAME=${BINARY_NAME}.exe
@@ -64,3 +66,38 @@ jobs:
           fi
           gh release upload ${{ github.event.release.tag_name }} $BINARY_NAME --repo ${{ github.repository }}
         shell: bash
+
+  checksums:
+    needs: build-and-attach
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download every binary from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          mkdir -p dist && cd dist
+          gh release download ${{ github.event.release.tag_name }} \
+            --repo ${{ github.repository }} \
+            --pattern 'komari-agent-*' --clobber
+          ls -la
+      - name: Generate per-asset .sha256 files and SHA256SUMS
+        run: |
+          set -euxo pipefail
+          cd dist
+          rm -f SHA256SUMS ./*.sha256
+          sha256sum komari-agent-* > SHA256SUMS
+          while read -r sum name; do
+            printf '%s\n' "$sum" > "${name}.sha256"
+          done < SHA256SUMS
+          ls -la
+      - name: Upload checksums to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          gh release upload ${{ github.event.release.tag_name }} \
+            dist/SHA256SUMS dist/*.sha256 --clobber --repo ${{ github.repository }}
