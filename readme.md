@@ -68,3 +68,41 @@ export AGENT_TOKEN="your-token"
 ```
 
 详见 `cmd/flags/flags.go` 及 `cmd/root.go`
+
+## 安装 / 迁移 / 更新（本 fork）
+
+本仓库（`xinian5216/komari-agent-stable`）是 Komari Agent 的社区维护稳定分支。
+安装、自更新与 Release 下载**全部指向本仓库**，协议仍为官方 v2，向后兼容。
+
+### 全新安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xinian5216/komari-agent-stable/stable/install.sh | sudo bash -s -- -e <ENDPOINT> -t <TOKEN>
+```
+
+### 从官方 Agent 迁移（保留节点与 token）
+
+主控升级不会改变已安装 Agent 的自更新来源，因此既有节点需执行一次迁移：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xinian5216/komari-agent-stable/stable/migrate-komari-agent.sh | sudo bash -s -- -y
+```
+
+脚本会：读取现有 systemd 单元里的全部启动参数（endpoint / token / interval 等）并原样保留 →
+备份旧二进制 → 下载并校验新二进制 → 替换 → 重启 → 打印日志中的 `Github Repo:` 行确认来源已切换。
+
+**不需要重新添加节点、不需要重新生成 token、不会丢失历史数据。**
+
+查看当前状态（只读）：
+
+```bash
+bash migrate-komari-agent.sh --status
+```
+
+### 回滚
+
+```bash
+sudo systemctl stop komari-agent
+sudo cp /opt/komari/agent.backup.<时间戳> /opt/komari/agent
+sudo systemctl start komari-agent
+```
