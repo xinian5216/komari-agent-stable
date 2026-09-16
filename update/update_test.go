@@ -1,6 +1,8 @@
 package update
 
 import (
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +202,33 @@ func testRelease(tag string, prerelease, draft bool, publishedAt time.Time, asse
 		HTMLURL:     "https://example.com/" + tag,
 		PublishedAt: publishedAt,
 		Assets:      assets,
+	}
+}
+
+// TestForkUpdateSource 验证自更新来源已切换到本 fork：
+// 默认仓库 slug、owner/repo 解析，以及 Release API URL 的构造。
+// 若这里失败，说明 Agent 会去 komari-monitor/komari-agent 取更新。
+func TestForkUpdateSource(t *testing.T) {
+	const wantSlug = "xinian5216/komari-agent-stable"
+	if Repo != wantSlug {
+		t.Fatalf("update.Repo = %q, want %q", Repo, wantSlug)
+	}
+
+	owner, name, err := splitRepoSlug(Repo)
+	if err != nil {
+		t.Fatalf("splitRepoSlug(%q): %v", Repo, err)
+	}
+	if owner != "xinian5216" || name != "komari-agent-stable" {
+		t.Fatalf("splitRepoSlug(%q) = (%q, %q)", Repo, owner, name)
+	}
+
+	got := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=100&page=%d",
+		githubAPIBaseURL, url.PathEscape(owner), url.PathEscape(name), 1)
+	const want = "https://api.github.com/repos/xinian5216/komari-agent-stable/releases?per_page=100&page=1"
+	if got != want {
+		t.Fatalf("release API URL = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "komari-monitor") {
+		t.Fatalf("release API URL still points at the upstream repository: %q", got)
 	}
 }
