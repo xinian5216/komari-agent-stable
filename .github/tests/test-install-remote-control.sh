@@ -280,14 +280,30 @@ esac
 
 # 9. Migration keeps the existing start arguments untouched.
 step "9. migrate-komari-agent.sh keeps the start arguments"
+# migrate-komari-agent.sh operates on the fixed /opt/komari installation path.
 reset_install
-mkdir -p "${TARGET_DIR}"
-write_fake_binary "${AGENT_PATH}" yes
-write_legacy_unit "--disable-web-ssh"
+MIGRATE_DIR="/opt/komari"
+MIGRATE_BINARY="${MIGRATE_DIR}/agent"
+MIGRATE_DIR_PREEXISTED=0
+[ -e "${MIGRATE_DIR}" ] && MIGRATE_DIR_PREEXISTED=1
+mkdir -p "${MIGRATE_DIR}"
+write_fake_binary "${MIGRATE_BINARY}" yes
+cat > "${UNIT}" <<EOF
+[Unit]
+Description=Komari Agent Service
+[Service]
+Type=simple
+ExecStart=${MIGRATE_BINARY} --endpoint https://panel.example.com --token secret-token --disable-web-ssh
+Restart=always
+[Install]
+WantedBy=multi-user.target
+EOF
 before_args="$(exec_start_line)"
+before_sum="$(sha256sum "${MIGRATE_BINARY}" | awk '{print $1}')"
 out="$(KOMARI_AGENT_SERVICE="${SERVICE}" KOMARI_TARGET_VERSION=vTEST \
     bash "${REPO_ROOT}/migrate-komari-agent.sh" --yes 2>&1)"
 after_args="$(exec_start_line)"
+after_sum="$(sha256sum "${MIGRATE_BINARY}" | awk '{print $1}')"
 if [ "${before_args}" = "${after_args}" ]; then
     pass "ExecStart is unchanged after migration"
 else
@@ -297,6 +313,14 @@ case "${before_args}" in
     *"--disable-web-ssh"*) pass "disabled state survives migration (args identical)" ;;
     *) fail "unexpected pre-migration args: ${before_args}" ;;
 esac
+if [ "${before_sum}" != "${after_sum}" ]; then
+    pass "migration actually replaced the binary (the check above is meaningful)"
+else
+    fail "migration did not run (arguments check would be vacuous): ${out}"
+fi
+if [ "${MIGRATE_DIR_PREEXISTED}" -eq 0 ]; then
+    rm -rf "${MIGRATE_DIR}"
+fi
 
 echo
 if [ "${FAILED}" -ne 0 ]; then
