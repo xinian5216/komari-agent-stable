@@ -25,6 +25,7 @@ TARGET_DIR="${WORK}/opt/komari"
 AGENT_PATH="${TARGET_DIR}/agent"
 FAILED=0
 SERVER_PIDS=""
+SERVER_PORT=""
 
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1" >&2; FAILED=1; }
@@ -64,20 +65,22 @@ write_fake_binary() {
 }
 
 start_server() {
+    # Sets the global SERVER_PORT. The PID is remembered so cleanup() can stop
+    # it: the port is exported through a variable rather than a command
+    # substitution, which would trap the pid inside a subshell.
     local root="$1"
-    local port
-    port="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
-    (cd "${root}" && python3 -m http.server "${port}" --bind 127.0.0.1 >/dev/null 2>&1) &
+    SERVER_PORT="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+    (cd "${root}" && exec python3 -m http.server "${SERVER_PORT}" --bind 127.0.0.1 >/dev/null 2>&1) &
     SERVER_PIDS="${SERVER_PIDS} $!"
     sleep 1
-    printf '%s' "${port}"
 }
 
 SERVE_ROOT="${WORK}/serve"
 SERVE="${SERVE_ROOT}/xinian5216/komari-agent-stable/releases/download/vTEST"
 write_fake_binary "${SERVE}/komari-agent-linux-amd64" yes
 (cd "${SERVE}" && sha256sum komari-agent-linux-amd64 > komari-agent-linux-amd64.sha256 && cp komari-agent-linux-amd64.sha256 SHA256SUMS)
-PORT="$(start_server "${SERVE_ROOT}")"
+start_server "${SERVE_ROOT}"
+PORT="${SERVER_PORT}"
 
 export KOMARI_AGENT_RELEASE_BASE="http://127.0.0.1:${PORT}"
 export KOMARI_AGENT_REPO_OWNER="xinian5216"
@@ -274,7 +277,8 @@ reset_install
 LEGACY_ROOT="${WORK}/legacy"
 LEGACY_SERVE="${LEGACY_ROOT}/xinian5216/komari-agent-stable/releases/download/vTEST"
 write_fake_binary "${LEGACY_SERVE}/komari-agent-linux-amd64" no
-LEGACY_PORT="$(start_server "${LEGACY_ROOT}")"
+start_server "${LEGACY_ROOT}"
+LEGACY_PORT="${SERVER_PORT}"
 KOMARI_AGENT_RELEASE_BASE="http://127.0.0.1:${LEGACY_PORT}" run_installer >/dev/null
 line="$(exec_start_line)"
 if [[ "${line}" == *--disable-web-ssh* ]]; then

@@ -63,9 +63,16 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Installer policy tests
-        # The whole policy run is bounded so that a stall fails fast and the
-        # last printed scenario marker names the culprit.
-        run: sudo timeout 600 bash .github/tests/test-install-remote-control.sh < /dev/null
+        # The script starts background HTTP servers; sending its output to a
+        # file keeps those children from holding the step's stdout, which would
+        # otherwise stall the job even after the script exits. The run is also
+        # bounded so a stall fails fast and names the last scenario reached.
+        run: |
+          set +e
+          sudo timeout 600 bash .github/tests/test-install-remote-control.sh </dev/null > /tmp/policy.log 2>&1
+          status=$?
+          cat /tmp/policy.log
+          exit $status
 
   startup-payloads:
     name: startup payloads of a monitoring-only agent
@@ -112,14 +119,21 @@ jobs:
 
           http.server.HTTPServer(('127.0.0.1', 18080), Handler).serve_forever()
           PY
-          python3 /tmp/capture.py &
+          # The capture server must not inherit the step's stdout: a background
+          # child holding that pipe would stall the job after the step's
+          # commands finish.
+          python3 /tmp/capture.py >/dev/null 2>&1 &
           sleep 1
           timeout 20 /tmp/komari-agent --endpoint http://127.0.0.1:18080 --token test-token \
-            --disable-remote-control --disable-compression > /tmp/agent-disabled.log 2>&1 || true
+            --disable-remote-control --disable-auto-update --disable-compression > /tmp/agent-disabled.log 2>&1 || true
+          # --disable-auto-update matters here: the freshly built development
+          # binary (version 0.0.1) would otherwise verify and install the latest
+          # release, then exit before reporting anything.
           echo "--- agent log (remote control disabled) ---"
           cat /tmp/agent-disabled.log
           echo "--- captured basic info ---"
-          head -c 400 /tmp/captured-basicinfo.json; echo
+          if [ -f /tmp/captured-basicinfo.json ]; then head -c 400 /tmp/captured-basicinfo.json; else echo "(no basic info captured)"; fi
+          echo
 
       - name: Assert the startup log and the basic info contract
         run: |
