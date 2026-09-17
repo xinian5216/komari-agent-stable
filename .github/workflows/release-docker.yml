@@ -62,16 +62,16 @@ jobs:
           fi
           echo "building from ${TAG} at ${HEAD_SHA}"
 
-      - name: Fetch the release guard from the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Require the release guard from this release
         run: |
           set -euo pipefail
-          # The guard lives on the default branch, so a manual dispatch on an
-          # older tag still gets the current checks.
-          git fetch --depth=1 origin "${DEFAULT_BRANCH}"
-          git show "FETCH_HEAD:.github/scripts/release-guard.sh" > "${RUNNER_TEMP}/release-guard.sh"
-          chmod +x "${RUNNER_TEMP}/release-guard.sh"
+          # The immutability rules of a published version are the rules that
+          # version shipped with: the guard comes from the tag being released,
+          # never from the default branch.
+          if [ ! -f .github/scripts/release-guard.sh ]; then
+            echo "::error::this legacy release does not contain the immutable release guard; automatic repair is refused"
+            exit 1
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -114,7 +114,7 @@ jobs:
           TAG: ${{ steps.source.outputs.tag }}
         run: |
           set -euo pipefail
-          bash "${RUNNER_TEMP}/release-guard.sh" image \
+          bash .github/scripts/release-guard.sh image \
             "${REGISTRY}/${IMAGE_NAME}:${TAG}" \
             "${REGISTRY}/${IMAGE_NAME}:latest"
 

@@ -58,16 +58,17 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Fetch the release guard from the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Require the release guard from this release
         run: |
           set -euo pipefail
-          # The guard lives on the default branch, so this also works for a
-          # dispatch on a tag that predates it.
-          git fetch --depth=1 origin "${DEFAULT_BRANCH}"
-          git show "FETCH_HEAD:.github/scripts/release-guard.sh" > "${RUNNER_TEMP}/release-guard.sh"
-          chmod +x "${RUNNER_TEMP}/release-guard.sh"
+          # The immutability policy of a published version is the policy that
+          # version shipped with. Nothing is fetched from the default branch: a
+          # legacy tag without the guard fails closed instead of being repaired
+          # by whatever the branch happens to contain today.
+          if [ ! -f .github/scripts/release-guard.sh ]; then
+            echo "::error::this legacy release does not contain the immutable release guard; automatic repair is refused"
+            exit 1
+          fi
 
       - name: Build binary
         env:
@@ -96,7 +97,7 @@ jobs:
             BINARY_NAME=${BINARY_NAME}.exe
           fi
           PLAN="$(mktemp)"
-          bash "${RUNNER_TEMP}/release-guard.sh" assets "${REPOSITORY}" "${TAG}" "${PLAN}" "${BINARY_NAME}"
+          bash .github/scripts/release-guard.sh assets "${REPOSITORY}" "${TAG}" "${PLAN}" "${BINARY_NAME}"
           if grep -qx "${BINARY_NAME}" "${PLAN}"; then
             gh release upload "${TAG}" "${BINARY_NAME}" --repo "${REPOSITORY}"
           else
@@ -110,16 +111,21 @@ jobs:
     if: ${{ always() && (needs.build-binaries.result == 'success' || needs.build-binaries.result == 'skipped') && (github.event_name == 'workflow_dispatch' || !github.event.release.prerelease) }}
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch the release guard from the default branch
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      - name: Checkout the released tag (source of the guard)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Require the release guard from this release
         run: |
           set -euo pipefail
-          # This job needs no source tree: only the guard script, which lives on
-          # the default branch (so a dispatch on an older tag still gets it).
-          git clone --depth=1 --branch "${DEFAULT_BRANCH}" \
-            "https://github.com/${{ github.repository }}.git" "${RUNNER_TEMP}/tooling"
-          chmod +x "${RUNNER_TEMP}/tooling/.github/scripts/release-guard.sh"
+          # A dispatch must not change the immutability rules that were already
+          # in force when the version was published, so the guard comes from the
+          # tag being repaired - never from the default branch.
+          if [ ! -f .github/scripts/release-guard.sh ]; then
+            echo "::error::this legacy release does not contain the immutable release guard; automatic repair is refused"
+            exit 1
+          fi
 
       - name: Download the published binaries (the only source of truth)
         env:
@@ -155,7 +161,7 @@ jobs:
         run: |
           set -euxo pipefail
           PLAN="$(mktemp)"
-          bash "${RUNNER_TEMP}/tooling/.github/scripts/release-guard.sh" assets "${REPOSITORY}" "${TAG}" "${PLAN}" \
+          bash .github/scripts/release-guard.sh assets "${REPOSITORY}" "${TAG}" "${PLAN}" \
             dist/SHA256SUMS dist/komari-agent-*.sha256
           while IFS= read -r name; do
             [ -n "${name}" ] || continue
@@ -172,4 +178,4 @@ jobs:
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euxo pipefail
-          bash "${RUNNER_TEMP}/tooling/.github/scripts/release-guard.sh" verify-sums "${REPOSITORY}" "${TAG}" dist/SHA256SUMS
+          bash .github/scripts/release-guard.sh verify-sums "${REPOSITORY}" "${TAG}" dist/SHA256SUMS

@@ -359,6 +359,84 @@ check_file_contains "${DOCKER_YML}" 'VERSION="\${TAG#v}"' "release-docker.yml co
 check_file_contains "${SNAPSHOT_YML}" "sha256" "snapshot.yml publishes checksums for the snapshot track"
 check_file_contains "${GUARD}" "immutable release asset mismatch" "the guard refuses to rewrite a published asset"
 
+step "10. the immutability policy comes from the released tag itself"
+
+# Static contract: nothing in the release tooling may pull the guard from the
+# default branch, and every guard call must use the checked-out copy.
+for wf in "${RELEASE_YML}" "${DOCKER_YML}"; do
+    name="$(basename "${wf}")"
+    check_file_absent "${wf}" "FETCH_HEAD" "${name} never reads the guard from FETCH_HEAD"
+    check_file_absent "${wf}" "default_branch" "${name} never consults the default branch for the guard"
+    check_file_absent "${wf}" "git clone" "${name} never clones a branch for the guard"
+    check_file_contains "${wf}" "bash .github/scripts/release-guard.sh" "${name} runs the guard from the checkout"
+    check_file_contains "${wf}" "this legacy release does not contain the immutable release guard; automatic repair is refused" "${name} refuses legacy tags explicitly"
+done
+check_file_contains "${RELEASE_YML}" 'ref: ${{ github.event.release.tag_name || inputs.tag }}' "the checksum job checks out the released tag"
+
+# Functional contract, driven by the workflow text itself: extract the guard
+# path and the "require the guard" check, then run them in two fake checkouts -
+# one carrying the tag's guard, one carrying a different guard plus a legacy
+# checkout without any guard at all.
+CONTRACT_DIR="${WORK}/contract"
+mkdir -p "${CONTRACT_DIR}/tag/.github/scripts" "${CONTRACT_DIR}/head/.github/scripts" "${CONTRACT_DIR}/legacy"
+for variant in tag head; do
+    marker="TAG-GUARD"
+    [ "${variant}" = "head" ] && marker="HEAD-GUARD"
+    cat > "${CONTRACT_DIR}/${variant}/.github/scripts/release-guard.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "${marker}"
+exit 0
+STUB
+    chmod +x "${CONTRACT_DIR}/${variant}/.github/scripts/release-guard.sh"
+done
+
+GUARD_INVOCATION="$(grep -o 'bash \.github/scripts/release-guard\.sh [a-z-]*' "${RELEASE_YML}" | head -1)"
+if [ -z "${GUARD_INVOCATION}" ]; then
+    fail "could not extract the guard invocation from release.yml"
+else
+    tag_output="$(cd "${CONTRACT_DIR}/tag" && ${GUARD_INVOCATION} placeholders...)"
+    head_output="$(cd "${CONTRACT_DIR}/head" && ${GUARD_INVOCATION} placeholders...)"
+    if [ "${tag_output}" = "TAG-GUARD" ]; then
+        pass "the guard invocation resolves to the copy inside the release checkout"
+    else
+        fail "the guard invocation did not resolve to the release copy (got '${tag_output}')"
+    fi
+    if [ "${head_output}" = "HEAD-GUARD" ]; then
+        pass "a different guard in another tree is never the one that runs"
+    else
+        fail "unexpected guard output from the simulated default branch (got '${head_output}')"
+    fi
+fi
+
+# The legacy refusal is extracted from the workflow as well, so the message and
+# the condition cannot drift apart from what the tests assert.
+sed -n '/if \[ ! -f \.github\/scripts\/release-guard\.sh \]; then/,/^          fi$/p' "${RELEASE_YML}" \
+    | head -4 > "${CONTRACT_DIR}/require-guard.sh"
+if [ ! -s "${CONTRACT_DIR}/require-guard.sh" ]; then
+    fail "could not extract the legacy guard refusal from release.yml"
+else
+    if (cd "${CONTRACT_DIR}/tag" && bash "${CONTRACT_DIR}/require-guard.sh") >/dev/null 2>&1; then
+        pass "a release that ships the guard passes the requirement"
+    else
+        fail "a release that ships the guard was rejected"
+    fi
+    legacy_out="$(cd "${CONTRACT_DIR}/legacy" && bash "${CONTRACT_DIR}/require-guard.sh" 2>&1)"
+    legacy_status=$?
+    if [ "${legacy_status}" -ne 0 ]; then
+        pass "a legacy release without the guard fails closed"
+    else
+        fail "a legacy release without the guard was accepted"
+    fi
+    case "${legacy_out}" in
+        *"this legacy release does not contain the immutable release guard; automatic repair is refused"*)
+            pass "the legacy failure says why it refused" ;;
+        *)
+            fail "the legacy failure does not explain the refusal"
+            printf '%s\n' "${legacy_out}" | sed 's/^/       | /' | tail -5
+            ;;
+    esac
+fi
+
 if [ "${FAILED}" -eq 0 ]; then
     printf 'RESULT: supply chain regression tests passed\n'
     exit 0
