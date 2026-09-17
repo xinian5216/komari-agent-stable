@@ -1,9 +1,20 @@
 name: Publish Docker Image
 
+# The image must always be built from the released tag - never from the default
+# branch HEAD - and its embedded version string must match the release binaries
+# (no leading "v" inside the binary, the "v" stays in the git/image tag).
+# The fixed version tag is immutable: if it already exists in the registry the
+# run fails instead of re-pointing it at another digest. "latest" floats.
+
 on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "已存在的 release tag（镜像必须从该 tag 的源码构建，例如 v1.5.10-stable.1）"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -22,8 +33,45 @@ jobs:
       packages: write
 
     steps:
-      - name: Checkout repository
+      - name: Resolve the release tag
+        id: source
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
+          if [ -z "${TAG}" ]; then
+            echo "::error::no release tag given: a versioned image is never built from the default branch"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
+      - name: Checkout the released tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.tag }}
+
+      - name: Fail unless the checkout is exactly that tag
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-parse "refs/tags/${TAG}^{commit}")"
+          if [ "${HEAD_SHA}" != "${TAG_SHA}" ]; then
+            echo "::error::the checkout (${HEAD_SHA}) is not the release tag ${TAG} (${TAG_SHA})"
+            exit 1
+          fi
+          echo "building from ${TAG} at ${HEAD_SHA}"
+
+      - name: Fetch the release guard from the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # The guard lives on the default branch, so a manual dispatch on an
+          # older tag still gets the current checks.
+          git fetch --depth=1 origin "${DEFAULT_BRANCH}"
+          git show "FETCH_HEAD:.github/scripts/release-guard.sh" > "${RUNNER_TEMP}/release-guard.sh"
+          chmod +x "${RUNNER_TEMP}/release-guard.sh"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -34,11 +82,12 @@ jobs:
         env:
           GOOS: linux
           CGO_ENABLED: 0
+          TAG: ${{ steps.source.outputs.tag }}
         run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="${{ github.sha }}"
-          fi
+          set -euo pipefail
+          # Same convention as the release binaries: the version compiled into
+          # the agent has no "v" prefix.
+          VERSION="${TAG#v}"
           LDFLAGS="-X github.com/komari-monitor/komari-agent/update.CurrentVersion=${VERSION}"
 
           echo "Building for linux/amd64..."
@@ -60,13 +109,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Immutability guard for the fixed image tag
+        env:
+          TAG: ${{ steps.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bash "${RUNNER_TEMP}/release-guard.sh" image \
+            "${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+            "${REGISTRY}/${IMAGE_NAME}:latest"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=${{ github.event.release.tag_name }}
+            type=raw,value=${{ steps.source.outputs.tag }}
             type=raw,value=latest
 
       - name: Build and push Docker image
