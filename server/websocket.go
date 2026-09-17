@@ -183,7 +183,7 @@ func runV2PullLoop(ctx context.Context) {
 		pullID := fmt.Sprintf("pull-%d", time.Now().UnixNano())
 		ackIDs := snapshotV2AckEventIDs()
 		payload := v2.NewRequest(pullID, v2.MethodAgentPull, map[string]interface{}{
-			"capabilities":  []string{"exec", "ping", "message", "event", "terminal", "file"},
+			"capabilities":  Capabilities(),
 			"ack_event_ids": ackIDs,
 		})
 		resp, err := postV2RequestContext(ctx, payload)

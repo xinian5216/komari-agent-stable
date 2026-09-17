@@ -58,6 +58,10 @@ func uploadBasicInfo() error {
 		"gpu_name":           monitoring.GpuName(),
 		"virtualization":     monitoring.Virtualized(),
 		"version":            update.CurrentVersion,
+		// Capabilities and privilege level are additive, optional fields. Older
+		// servers ignore unknown fields, so this stays protocol v2 compatible.
+		"capabilities":    Capabilities(),
+		"privilege_level": string(PrivilegeLevel()),
 	}
 
 	return tryUploadData(data)
