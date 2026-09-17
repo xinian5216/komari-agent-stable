@@ -47,6 +47,28 @@ export PATH="${WORK}/bin:${PATH}"
 # --- fake release server ----------------------------------------------------
 # Two builds: the current one advertises the new alias, the legacy one only
 # knows --disable-web-ssh.
+# The installer now verifies release checksums, so every served release needs
+# checksum assets next to its binaries.
+sign_release_dir() {
+    local dir="$1" file
+    [ -d "${dir}" ] || return 0
+    (
+        cd "${dir}" || exit 1
+        for file in komari-agent-*; do
+            [ -f "${file}" ] || continue
+            case "${file}" in *.sha256) continue ;; esac
+        done
+        rm -f ./*.sha256
+        sha256sum komari-agent-* > SHA256SUMS 2>/dev/null || true
+        [ -f SHA256SUMS ] || exit 0
+        while read -r sum name; do
+            [ -n "${name:-}" ] || continue
+            printf '%s
+' "${sum}" > "${name}.sha256"
+        done < SHA256SUMS
+    )
+}
+
 write_fake_binary() {
     local dest="$1" with_alias="$2"
     mkdir -p "$(dirname "${dest}")"
@@ -78,6 +100,7 @@ start_server() {
 SERVE_ROOT="${WORK}/serve"
 SERVE="${SERVE_ROOT}/xinian5216/komari-agent-stable/releases/download/vTEST"
 write_fake_binary "${SERVE}/komari-agent-linux-amd64" yes
+sign_release_dir "$(dirname "${SERVE}/komari-agent-linux-amd64")"
 (cd "${SERVE}" && sha256sum komari-agent-linux-amd64 > komari-agent-linux-amd64.sha256 && cp komari-agent-linux-amd64.sha256 SHA256SUMS)
 start_server "${SERVE_ROOT}"
 PORT="${SERVER_PORT}"
@@ -285,6 +308,7 @@ reset_install
 LEGACY_ROOT="${WORK}/legacy"
 LEGACY_SERVE="${LEGACY_ROOT}/xinian5216/komari-agent-stable/releases/download/vTEST"
 write_fake_binary "${LEGACY_SERVE}/komari-agent-linux-amd64" no
+sign_release_dir "$(dirname "${LEGACY_SERVE}/komari-agent-linux-amd64")"
 start_server "${LEGACY_ROOT}"
 LEGACY_PORT="${SERVER_PORT}"
 KOMARI_AGENT_RELEASE_BASE="http://127.0.0.1:${LEGACY_PORT}" run_installer >/dev/null

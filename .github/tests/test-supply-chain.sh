@@ -222,7 +222,11 @@ install_must_refuse() { # <version> <label>
     fi
     case "${out}" in
         *"Nothing was installed"*) pass "$2: the installer explains that nothing was installed" ;;
-        *) fail "$2: the installer did not explain the refusal" ;;
+        *)
+            fail "$2: the installer did not explain the refusal"
+            printf '%s
+' "${out}" | sed 's/^/       | /' | tail -12
+            ;;
     esac
 }
 
@@ -253,7 +257,11 @@ else
 fi
 case "${out}" in
     *"SHA256 tool"*) pass "the failure names the missing SHA256 tool" ;;
-    *) fail "the failure does not name the missing SHA256 tool" ;;
+    *)
+        fail "the failure does not name the missing SHA256 tool"
+        printf '%s
+' "${out}" | sed 's/^/       | /' | tail -12
+        ;;
 esac
 
 # ------------------------------------------------------------ 6. migration
