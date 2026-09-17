@@ -83,12 +83,26 @@ export KOMARI_AGENT_RELEASE_BASE="http://127.0.0.1:${PORT}"
 export KOMARI_AGENT_REPO_OWNER="xinian5216"
 export KOMARI_AGENT_REPO_NAME="komari-agent-stable"
 
+# A missing timeout(1) must not be mistaken for a product failure.
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD="timeout"
+else
+    TIMEOUT_CMD=""
+fi
+
 run_installer() {
-    bash "${REPO_ROOT}/install.sh" \
+    # stdin is closed so that any interactive prompt fails fast instead of
+    # hanging the job, and the whole run is bounded.
+    ${TIMEOUT_CMD} 180 bash "${REPO_ROOT}/install.sh" \
         --install-dir "${TARGET_DIR}" \
         --install-service-name "${SERVICE}" \
         --install-version vTEST \
-        --install-no-mirror "$@" 2>&1
+        --install-no-mirror "$@" </dev/null 2>&1
+    status=$?
+    if [ "${status}" -eq 124 ]; then
+        fail "installer timed out: install.sh $*"
+    fi
+    return "${status}"
 }
 
 exec_start_line() { sed -n 's/^ExecStart=//p' "${UNIT}" 2>/dev/null | head -1; }
@@ -300,8 +314,8 @@ WantedBy=multi-user.target
 EOF
 before_args="$(exec_start_line)"
 before_sum="$(sha256sum "${MIGRATE_BINARY}" | awk '{print $1}')"
-out="$(KOMARI_AGENT_SERVICE="${SERVICE}" KOMARI_TARGET_VERSION=vTEST \
-    bash "${REPO_ROOT}/migrate-komari-agent.sh" --yes 2>&1)"
+out="$(${TIMEOUT_CMD} 180 env KOMARI_AGENT_SERVICE="${SERVICE}" KOMARI_TARGET_VERSION=vTEST \
+    bash "${REPO_ROOT}/migrate-komari-agent.sh" --yes </dev/null 2>&1)"
 after_args="$(exec_start_line)"
 after_sum="$(sha256sum "${MIGRATE_BINARY}" | awk '{print $1}')"
 if [ "${before_args}" = "${after_args}" ]; then

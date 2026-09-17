@@ -19,6 +19,7 @@ jobs:
   unit-tests:
     name: unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,16 +57,18 @@ jobs:
   installer-policy:
     name: installer remote control policy
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Installer policy tests
-        run: sudo bash .github/tests/test-install-remote-control.sh
+        run: sudo bash .github/tests/test-install-remote-control.sh < /dev/null
 
   wire-capabilities:
     name: wire capabilities of both modes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
