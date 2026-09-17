@@ -37,13 +37,24 @@ func UpdateBasicInfo() {
 	}
 }
 func uploadBasicInfo() error {
+	return tryUploadData(basicInfoPayload())
+}
+
+// basicInfoPayload is what the agent reports as its static information.
+//
+// Do NOT add fields here that older servers do not know: the released servers
+// map this payload straight onto SQL columns and fail with "no such column" for
+// unknown keys, which would break basic info reporting entirely. Capabilities
+// are reported through agent.report, whose typed struct safely ignores unknown
+// fields on older servers.
+func basicInfoPayload() map[string]interface{} {
 	cpu := monitoring.CpuStaticInfo()
 
 	osname := monitoring.OSName()
 	kernelVersion := monitoring.KernelVersion()
 	ipv4, ipv6, _ := monitoring.GetIPAddress()
 
-	data := map[string]interface{}{
+	return map[string]interface{}{
 		"cpu_name":           cpu.CPUName,
 		"cpu_cores":          cpu.CPUCores,
 		"cpu_physical_cores": cpu.CPUPhysicalCores,
@@ -58,13 +69,7 @@ func uploadBasicInfo() error {
 		"gpu_name":           monitoring.GpuName(),
 		"virtualization":     monitoring.Virtualized(),
 		"version":            update.CurrentVersion,
-		// Capabilities and privilege level are additive, optional fields. Older
-		// servers ignore unknown fields, so this stays protocol v2 compatible.
-		"capabilities":    Capabilities(),
-		"privilege_level": string(PrivilegeLevel()),
 	}
-
-	return tryUploadData(data)
 }
 
 func tryUploadData(data map[string]interface{}) error {

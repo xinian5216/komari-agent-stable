@@ -84,6 +84,12 @@ jobs:
           cat > /tmp/capture.py <<'PY'
           import http.server, json
 
+          def store(method, body):
+              if method == 'agent.report':
+                  open('/tmp/captured-report.json', 'wb').write(body)
+              elif method == 'agent.basicInfo':
+                  open('/tmp/captured-basicinfo.json', 'wb').write(body)
+
           class Handler(http.server.BaseHTTPRequestHandler):
               def do_POST(self):
                   length = int(self.headers.get('Content-Length', 0))
@@ -92,8 +98,7 @@ jobs:
                       payload = json.loads(body.decode('utf-8'))
                   except Exception:
                       payload = {}
-                  if payload.get('method') == 'agent.basicInfo':
-                      open('/tmp/captured-basicinfo.json', 'wb').write(body)
+                  store(payload.get('method'), body)
                   self.send_response(200)
                   self.send_header('Content-Type', 'application/json')
                   self.end_headers()
@@ -110,46 +115,66 @@ jobs:
             --disable-remote-control --disable-compression > /tmp/agent-disabled.log 2>&1 || true
           echo "--- agent log (remote control disabled) ---"
           cat /tmp/agent-disabled.log
+          echo "--- captured report ---"
+          head -c 400 /tmp/captured-report.json; echo
           echo "--- captured basic info ---"
-          cat /tmp/captured-basicinfo.json
-          echo
+          head -c 400 /tmp/captured-basicinfo.json; echo
 
       - name: Assert the monitoring-only capabilities
         run: |
           python3 - <<'PY'
           import json
 
-          payload = json.loads(open('/tmp/captured-basicinfo.json', 'rb').read().decode('utf-8'))
-          assert payload.get('method') == 'agent.basicInfo', payload.get('method')
-          params = payload['params']
-          capabilities = params.get('capabilities')
+          payload = json.loads(open('/tmp/captured-report.json', 'rb').read().decode('utf-8'))
+          assert payload.get('method') == 'agent.report', payload.get('method')
+          report = payload['params']['report']
+          capabilities = report.get('capabilities')
           assert capabilities == ['ping', 'message', 'event'], capabilities
-          assert params.get('privilege_level') in ('elevated', 'standard', 'unknown'), params.get('privilege_level')
+          assert report.get('privilege_level') in ('elevated', 'standard', 'unknown'), report.get('privilege_level')
+          # The metrics themselves must survive the augmentation.
+          assert 'cpu' in report and 'ram' in report, sorted(report)
           log = open('/tmp/agent-disabled.log', 'rb').read().decode('utf-8', 'replace')
           assert 'Remote control: disabled (monitoring only)' in log, log
-          print('OK: monitoring-only agent reported', capabilities, 'privilege_level =', params.get('privilege_level'))
+          print('OK: monitoring-only agent reported', capabilities, 'privilege_level =', report.get('privilege_level'))
+          PY
+
+      - name: Assert basic info stayed free of new keys
+        run: |
+          python3 - <<'PY'
+          import json
+
+          # Released servers map agent.basicInfo straight onto SQL columns, so an
+          # unknown key makes them fail with "no such column".
+          allowed = {'cpu_name', 'cpu_cores', 'cpu_physical_cores', 'arch', 'os',
+                     'kernel_version', 'ipv4', 'ipv6', 'mem_total', 'swap_total',
+                     'disk_total', 'gpu_name', 'virtualization', 'version'}
+          payload = json.loads(open('/tmp/captured-basicinfo.json', 'rb').read().decode('utf-8'))
+          info = payload['params']['info']
+          unexpected = sorted(set(info) - allowed)
+          assert not unexpected, unexpected
+          assert not {'capabilities', 'privilege_level'} & set(info), sorted(info)
+          print('OK: basic info keys are still the released set')
           PY
 
       - name: Capture what an opted-in agent reports
         run: |
-          rm -f /tmp/captured-basicinfo.json
+          rm -f /tmp/captured-report.json /tmp/captured-basicinfo.json
           python3 /tmp/capture.py &
           sleep 1
           timeout 20 /tmp/komari-agent --endpoint http://127.0.0.1:18080 --token test-token \
             --disable-compression > /tmp/agent-enabled.log 2>&1 || true
           echo "--- agent log (remote control enabled) ---"
           cat /tmp/agent-enabled.log
-          echo "--- captured basic info ---"
-          cat /tmp/captured-basicinfo.json
-          echo
+          echo "--- captured report ---"
+          head -c 400 /tmp/captured-report.json; echo
 
       - name: Assert the opted-in capabilities
         run: |
           python3 - <<'PY'
           import json
 
-          payload = json.loads(open('/tmp/captured-basicinfo.json', 'rb').read().decode('utf-8'))
-          capabilities = payload['params']['capabilities']
+          payload = json.loads(open('/tmp/captured-report.json', 'rb').read().decode('utf-8'))
+          capabilities = payload['params']['report']['capabilities']
           assert capabilities == ['ping', 'message', 'event', 'exec', 'terminal', 'file'], capabilities
           log = open('/tmp/agent-enabled.log', 'rb').read().decode('utf-8', 'replace')
           assert 'Remote control: enabled' in log, log

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -81,5 +82,65 @@ func TestRemoteControlDisabledMirrorsFlag(t *testing.T) {
 	setRemoteControlDisabled(t, false)
 	if RemoteControlDisabled() {
 		t.Fatal("RemoteControlDisabled() = true while remote control is enabled")
+	}
+}
+
+func TestReportPayloadCarriesRemoteControlInfo(t *testing.T) {
+	setRemoteControlDisabled(t, true)
+	augmented := reportPayload([]byte(`{"cpu":{"usage":1},"uptime":5}`))
+
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(augmented, &decoded); err != nil {
+		t.Fatalf("report payload is not valid JSON: %v", err)
+	}
+	if decoded["cpu"] == nil || decoded["uptime"] == nil {
+		t.Fatalf("existing report fields were lost: %v", decoded)
+	}
+	capabilities, ok := decoded["capabilities"].([]interface{})
+	if !ok {
+		t.Fatalf("capabilities missing from the report: %v", decoded)
+	}
+	if len(capabilities) != 3 {
+		t.Fatalf("disabled agent reported %v", capabilities)
+	}
+	if _, ok := decoded["privilege_level"].(string); !ok {
+		t.Fatalf("privilege level missing from the report: %v", decoded)
+	}
+
+	setRemoteControlDisabled(t, false)
+	if !strings.Contains(string(reportPayload([]byte(`{}`))), `"exec"`) {
+		t.Fatal("enabled agent did not report the exec capability")
+	}
+
+	// A malformed report is passed through untouched instead of being dropped.
+	const broken = `{not json`
+	if got := string(reportPayload([]byte(broken))); got != broken {
+		t.Fatalf("malformed report was rewritten: %q", got)
+	}
+}
+
+// TestBasicInfoPayloadStaysBackwardCompatible guards the contract that broke
+// once: released servers map agent.basicInfo straight onto SQL columns, so an
+// unknown key makes them fail with "no such column" and the agent stops being
+// able to report basic info at all. New fields must go somewhere typed instead
+// (see agent.report).
+func TestBasicInfoPayloadStaysBackwardCompatible(t *testing.T) {
+	allowed := map[string]bool{
+		"cpu_name": true, "cpu_cores": true, "cpu_physical_cores": true,
+		"arch": true, "os": true, "kernel_version": true, "ipv4": true,
+		"ipv6": true, "mem_total": true, "swap_total": true, "disk_total": true,
+		"gpu_name": true, "virtualization": true, "version": true,
+	}
+
+	payload := basicInfoPayload()
+	for key := range payload {
+		if !allowed[key] {
+			t.Fatalf("agent.basicInfo gained the key %q; released servers reject unknown keys when saving basic info", key)
+		}
+	}
+	for key := range allowed {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("agent.basicInfo lost the key %q", key)
+		}
 	}
 }

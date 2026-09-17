@@ -99,7 +99,7 @@ func EstablishWebSocketConnection() {
 			}
 			nextReportAt = time.Now().Add(reportInterval)
 
-			data := v2.BuildReportPayload(monitoring.GenerateReport())
+			data := v2.BuildReportPayload(reportPayload(monitoring.GenerateReport()))
 			err = conn.WriteMessage(websocket.TextMessage, data)
 			if err != nil {
 				log.Println("Failed to send WebSocket message:", err)
@@ -156,7 +156,7 @@ func runPostFallback(websocketEndpoint string, interval float64) (*ws.SafeConn, 
 		case <-reportTicker.C:
 			reportID := fmt.Sprintf("report-%d", time.Now().UnixNano())
 			ackIDs := snapshotV2AckEventIDs()
-			resp, err := postV2Request(v2.BuildReportRequest(reportID, monitoring.GenerateReport(), ackIDs))
+			resp, err := postV2Request(v2.BuildReportRequest(reportID, reportPayload(monitoring.GenerateReport()), ackIDs))
 			if err != nil {
 				log.Println("Failed to POST v2 report:", err)
 				continue
