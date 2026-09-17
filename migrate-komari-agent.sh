@@ -121,19 +121,78 @@ download_url() {
     fi
 }
 
+# sha256_of <file>：优先 sha256sum，其次 shasum -a 256 / openssl dgst -sha256；
+# 一个都没有时明确失败 —— 迁移替换的是正在运行的 Agent，不得跳过校验。
+sha256_of() {
+    local file="$1" digest
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        digest=$(shasum -a 256 "$file" | awk '{print $1}')
+    elif command -v openssl >/dev/null 2>&1; then
+        digest=$(openssl dgst -sha256 "$file" | awk '{print $NF}')
+    else
+        die "找不到任何 SHA256 工具（sha256sum / shasum -a 256 / openssl dgst -sha256），校验不可跳过"
+    fi
+    printf '%s' "$digest" | tr 'A-F' 'a-f'
+}
+
+# 严格解析：<asset>.sha256 只允许一行；SHA256SUMS 按精确文件名匹配，不按顺序猜测。
+expected_checksum() {
+    local url="$1" asset="$2" body line digest name found=""
+    body=$(curl -fsSL -m 20 "${url}.sha256" 2>/dev/null || true)
+    if [ -n "$body" ]; then
+        line=$(printf '%s\n' "$body" | tr -d '\r' | awk 'NF' | head -2)
+        if [ "$(printf '%s\n' "$line" | grep -c . || true)" -eq 1 ]; then
+            digest="${line%% *}"
+            name="${line#"$digest"}"
+            name="${name#"${name%%[![:space:]]*}"}"
+            case "$digest" in
+                ""|*[!0-9a-fA-F]*) digest="" ;;
+            esac
+            if [ -n "$digest" ] && [ "${#digest}" -eq 64 ]; then
+                if [ -z "$name" ] || [ "$name" = "$asset" ] || [ "$name" = "*$asset" ]; then
+                    printf '%s' "$digest" | tr 'A-F' 'a-f'
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    if [ -n "$asset" ]; then
+        while IFS= read -r line; do
+            line=$(printf '%s' "$line" | tr -d '\r')
+            [ -n "$line" ] || continue
+            digest="${line%%[[:space:]]*}"
+            name="${line#"$digest"}"
+            name="${name#"${name%%[![:space:]]*}"}"
+            name="${name%%[[:space:]]*}"
+            case "$digest" in
+                ""|*[!0-9a-fA-F]*) return 1 ;;
+            esac
+            [ "${#digest}" -eq 64 ] || return 1
+            [ -n "$name" ] || return 1
+            [ "$name" = "$asset" ] || [ "$name" = "*$asset" ] || continue
+            digest=$(printf '%s' "$digest" | tr 'A-F' 'a-f')
+            if [ -n "$found" ] && [ "$found" != "$digest" ]; then
+                return 1
+            fi
+            found="$digest"
+        done <<EOF
+$(curl -fsSL -m 20 "$(dirname "$url")/SHA256SUMS" 2>/dev/null || true)
+EOF
+    fi
+    [ -n "$found" ] || return 1
+    printf '%s' "$found"
+}
+
 verify_checksum() {
     local url="$1" file="$2" asset="$3" expected actual
-    command -v sha256sum >/dev/null 2>&1 || { warn "sha256sum 不可用，跳过校验"; return 0; }
-    expected=$(curl -fsSL -m 20 "${url}.sha256" 2>/dev/null | awk '{print $1}' | head -1)
-    if [ -z "$expected" ] && [ -n "$asset" ]; then
-        expected=$(curl -fsSL -m 20 "$(dirname "$url")/SHA256SUMS" 2>/dev/null \
-            | awk -v n="$asset" '$2 == n || $2 == "*" n {print $1}' | head -1)
-    fi
-    if [ -z "$expected" ]; then
-        warn "该版本未提供 .sha256 / SHA256SUMS，跳过校验"
-        return 0
-    fi
-    actual=$(sha256sum "$file" | awk '{print $1}')
+    expected=$(expected_checksum "$url" "$asset") || {
+        warn "未能取得 $asset 的可信校验和（.sha256 / SHA256SUMS 缺失或格式非法）"
+        return 1
+    }
+    actual=$(sha256_of "$file")
     if [ "$expected" != "$actual" ]; then
         warn "校验失败（期望 $expected，实际 $actual）"
         return 1
@@ -195,9 +254,10 @@ main() {
     verify_checksum "$url" "$tmp" "$asset" || { rm -f "$tmp"; die "校验未通过，未做任何改动"; }
     chmod +x "$tmp"
 
-    step "停止服务并替换二进制（启动参数保持原样）"
-    systemctl stop "${SERVICE_NAME}.service" || true
+    step "备份旧二进制，然后停止服务并替换（启动参数保持原样）"
+    # 先备份再停服务：任何一步失败都还留着旧二进制与运行中的服务。
     cp "$BINARY_PATH" "$backup" || { rm -f "$tmp"; die "无法备份旧二进制"; }
+    systemctl stop "${SERVICE_NAME}.service" || true
     if ! mv -f "$tmp" "$BINARY_PATH"; then
         cp "$backup" "$BINARY_PATH"
         systemctl start "${SERVICE_NAME}.service" || true
