@@ -14,6 +14,7 @@ $ServiceName = "komari-agent"
 $GitHubProxy = ""
 $KomariArgs = @()
 $InstallVersion = ""
+$RemoteControlChoice = "" # "", "enabled" or "disabled"
 
 # ---------------------------------------------------------------------------
 # Release source (fork-owned). Owner/repo are defined HERE ONLY — do not
@@ -26,6 +27,22 @@ $GitHubApiBase = if ($env:KOMARI_AGENT_API_BASE) { $env:KOMARI_AGENT_API_BASE } 
 $GitHubReleaseBase = if ($env:KOMARI_AGENT_RELEASE_BASE) { $env:KOMARI_AGENT_RELEASE_BASE } else { "https://github.com" }
 $RepoSlug = "$RepoOwner/$RepoName"
 
+# Remote control policy for new installations: monitoring only unless the
+# operator explicitly opts in. KOMARI_AGENT_REMOTE_CONTROL=1|0 is the
+# environment equivalent of --enable/--disable-remote-control; an explicit
+# command line option below overrides it.
+if ($env:KOMARI_AGENT_REMOTE_CONTROL) {
+    $value = $env:KOMARI_AGENT_REMOTE_CONTROL.Trim().ToLower()
+    switch ($value) {
+        { $_ -in @("1", "true", "yes", "enabled") } { $RemoteControlChoice = "enabled"; break }
+        { $_ -in @("0", "false", "no", "disabled") } { $RemoteControlChoice = "disabled"; break }
+        default {
+            Log-Error "Invalid KOMARI_AGENT_REMOTE_CONTROL value: $($env:KOMARI_AGENT_REMOTE_CONTROL) (expected 1 or 0)"
+            exit 1
+        }
+    }
+}
+
 # Parse script arguments
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
@@ -33,6 +50,8 @@ for ($i = 0; $i -lt $args.Count; $i++) {
         "--install-service-name" { $ServiceName = $args[$i + 1]; $i++; continue }
         "--install-ghproxy" { $GitHubProxy = $args[$i + 1]; $i++; continue }
         "--install-version" { $InstallVersion = $args[$i + 1]; $i++; continue }
+        "--enable-remote-control" { $RemoteControlChoice = "enabled"; continue }
+        "--disable-remote-control" { $RemoteControlChoice = "disabled"; continue }
         Default { $KomariArgs += $args[$i] }
     }
 }
@@ -178,6 +197,78 @@ if ($InstallVersion -ne "") {
     Log-Config "Agent version: Latest"
 }
 
+# ---------------------------------------------------------------------------
+# Remote control resolution
+# ---------------------------------------------------------------------------
+# An existing installation keeps its remote control setting. Only an explicit
+# option (flag or KOMARI_AGENT_REMOTE_CONTROL) changes it; when the setting of
+# an existing service cannot be read reliably the installer stops instead of
+# guessing.
+function Get-ExistingRemoteControlState {
+    $statusOutput = (nssm status $ServiceName 2>&1) -join ' '
+    $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if (-not $service -and ($statusOutput -match "does not exist" -or $statusOutput -notmatch "SERVICE_")) {
+        return "absent"
+    }
+
+    $readable = $false
+    $argsLine = ""
+
+    $nssmArgs = nssm get $ServiceName AppParameters 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $readable = $true
+        $argsLine = ($nssmArgs -join ' ')
+    }
+
+    if (-not $readable) {
+        try {
+            $reg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters" -Name AppParameters -ErrorAction Stop
+            $readable = $true
+            $argsLine = [string]$reg.AppParameters
+        }
+        catch { }
+    }
+
+    if (-not $readable) {
+        return "unknown"
+    }
+    if ($argsLine -match '--disable-web-ssh' -or $argsLine -match '--disable-remote-control') {
+        return "disabled"
+    }
+    return "enabled"
+}
+
+$existingRemoteControl = Get-ExistingRemoteControlState
+if ($existingRemoteControl -eq "unknown" -and $RemoteControlChoice -eq "") {
+    Log-Error "An existing service for $ServiceName was found, but its remote control setting could not be read."
+    Log-Info "Refusing to change it silently. Re-run with either:"
+    Log-Info "  --disable-remote-control   (monitoring only)"
+    Log-Info "  --enable-remote-control    (keep remote control available)"
+    exit 1
+}
+
+if ($RemoteControlChoice -ne "") {
+    $RemoteControlDecision = $RemoteControlChoice
+    $RemoteControlSource = "explicit option"
+}
+elseif ($existingRemoteControl -eq "disabled" -or $existingRemoteControl -eq "enabled") {
+    $RemoteControlDecision = $existingRemoteControl
+    $RemoteControlSource = "kept from the existing service"
+}
+else {
+    $RemoteControlDecision = "disabled"
+    $RemoteControlSource = "default for new installations"
+}
+
+if ($RemoteControlDecision -eq "enabled") {
+    $argsLine = $KomariArgs -join ' '
+    if ($argsLine -match '--disable-web-ssh' -or $argsLine -match '--disable-remote-control') {
+        Log-Error "Conflicting options: remote control is enabled but a disabling flag was passed through."
+        exit 1
+    }
+}
+Log-Config "Remote control: $RemoteControlDecision ($RemoteControlSource)"
+
 # Paths
 $BinaryName = "komari-agent-windows-$arch.exe"
 $AgentPath = Join-Path $InstallDir "komari-agent.exe"
@@ -310,6 +401,37 @@ Log-Success "Downloaded and saved to $AgentPath"
 
 # Register and start service
 Log-Step "Configuring Windows service with nssm..."
+
+# Apply the remote control decision to the service arguments. The flag name
+# falls back to the historical spelling when the installed binary does not know
+# the newer alias yet.
+$argsLine = $KomariArgs -join ' '
+if ($RemoteControlDecision -eq "disabled" -and -not ($argsLine -match '--disable-web-ssh' -or $argsLine -match '--disable-remote-control')) {
+    $flag = "--disable-web-ssh"
+    $helpOutput = ""
+    if (Test-Path $AgentPath) {
+        $helpOut = Join-Path $env:TEMP "komari-agent-help-out.txt"
+        $helpErr = Join-Path $env:TEMP "komari-agent-help-err.txt"
+        try {
+            $proc = Start-Process -FilePath $AgentPath -ArgumentList '--help' -NoNewWindow -PassThru -RedirectStandardOutput $helpOut -RedirectStandardError $helpErr
+            if (-not $proc.WaitForExit(15000)) {
+                try { $proc.Kill() } catch { }
+            }
+            $helpOutput = (Get-Content $helpOut -Raw -ErrorAction SilentlyContinue) + (Get-Content $helpErr -Raw -ErrorAction SilentlyContinue)
+        }
+        catch { }
+        Remove-Item $helpOut, $helpErr -Force -ErrorAction SilentlyContinue
+    }
+    if ($helpOutput -match '--disable-remote-control') {
+        $flag = "--disable-remote-control"
+    }
+    $KomariArgs += $flag
+    Log-Config "Remote control: disabled via $flag ($RemoteControlSource)"
+}
+else {
+    Log-Config "Remote control: $RemoteControlDecision ($RemoteControlSource)"
+}
+
 $argString = $KomariArgs -join ' '
 # Ensure InstallDir and AgentPath are quoted if they contain spaces
 $quotedAgentPath = "`"$AgentPath`""

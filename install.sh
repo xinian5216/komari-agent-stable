@@ -59,6 +59,25 @@ install_no_mirror=false # 关闭自动加速镜像
 service_user="${SUDO_USER:-$(id -un)}"
 user_service=false
 
+# Remote control policy for new installations: monitoring only unless the
+# operator explicitly opts in. KOMARI_AGENT_REMOTE_CONTROL=1|0 is accepted as
+# the environment equivalent of --enable/--disable-remote-control.
+remote_control_choice="" # "", "enabled" or "disabled"
+case "${KOMARI_AGENT_REMOTE_CONTROL:-}" in
+    "")
+        ;;
+    1|true|TRUE|True|yes|YES|enabled)
+        remote_control_choice="enabled"
+        ;;
+    0|false|FALSE|False|no|NO|disabled)
+        remote_control_choice="disabled"
+        ;;
+    *)
+        echo "Invalid KOMARI_AGENT_REMOTE_CONTROL value: ${KOMARI_AGENT_REMOTE_CONTROL} (expected 1 or 0)" >&2
+        exit 1
+        ;;
+esac
+
 # Detect OS
 os_type=$(uname -s)
 case $os_type in
@@ -113,6 +132,14 @@ while [ $# -gt 0 ]; do
             install_no_mirror=true
             shift
             ;;
+        --enable-remote-control)
+            remote_control_choice="enabled"
+            shift
+            ;;
+        --disable-remote-control)
+            remote_control_choice="disabled"
+            shift
+            ;;
         --install*)
             log_warning "Unknown install parameter: $1"
             shift
@@ -127,6 +154,55 @@ done
 
 # Remove leading space from komari_args if present
 komari_args="${komari_args# }"
+
+# ---------------------------------------------------------------------------
+# Remote control resolution
+# ---------------------------------------------------------------------------
+# An existing installation keeps its remote control setting. Only an explicit
+# option (flag or KOMARI_AGENT_REMOTE_CONTROL) changes it; when the setting of
+# an existing service cannot be read reliably the installer stops instead of
+# guessing.
+existing_service_files() {
+    if [ "$user_service" = true ]; then
+        printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${service_name}.service"
+    fi
+    printf '%s\n' "/etc/systemd/system/${service_name}.service"
+    printf '%s\n' "/lib/systemd/system/${service_name}.service"
+    printf '%s\n' "/usr/lib/systemd/system/${service_name}.service"
+    printf '%s\n' "/etc/init.d/${service_name}"
+    printf '%s\n' "/etc/init/${service_name}.conf"
+    if [ "$os_name" = "darwin" ]; then
+        printf '%s\n' "/Library/LaunchDaemons/com.komari.${service_name}.plist"
+        printf '%s\n' "$HOME/Library/LaunchAgents/com.komari.${service_name}.plist"
+    fi
+}
+
+# Prints disabled | enabled | unknown | absent
+existing_remote_control_state() {
+    found=""
+    for file in $(existing_service_files); do
+        [ -f "$file" ] || continue
+        found="$file"
+        if grep -q -e '--disable-web-ssh' -e '--disable-remote-control' "$file" 2>/dev/null; then
+            printf 'disabled\n'
+            return
+        fi
+    done
+
+    if [ -z "$found" ]; then
+        printf 'absent\n'
+        return
+    fi
+
+    # No disabling flag is present. Only trust the file when it really is a
+    # Komari Agent service definition.
+    if grep -q -e 'komari' -e "${komari_agent_path}" "$found" 2>/dev/null; then
+        printf 'enabled\n'
+        return
+    fi
+
+    printf 'unknown\n'
+}
 
 # A direct, unprivileged installation belongs entirely to the invoking user.
 if [ "$EUID" -ne 0 ] && [ "$install_dir_specified" = false ]; then
@@ -160,6 +236,44 @@ log_config "  Service user: ${GREEN}$service_user${NC}"
 log_config "  Install directory: ${GREEN}$target_dir${NC}"
 log_config "  GitHub proxy: ${GREEN}${github_proxy:-(direct)}${NC}"
 log_config "  Binary arguments: ${GREEN}$komari_args${NC}"
+
+# Resolve the effective remote control setting before anything is uninstalled.
+existing_remote_control="$(existing_remote_control_state)"
+
+case "$existing_remote_control" in
+    disabled|enabled|absent)
+        ;;
+    *)
+        if [ -z "$remote_control_choice" ]; then
+            log_error "An existing service for ${service_name} was found, but its remote control setting could not be read."
+            log_info "Refusing to change it silently. Re-run with either:"
+            log_info "  --disable-remote-control   (monitoring only)"
+            log_info "  --enable-remote-control    (keep remote control available)"
+            exit 1
+        fi
+        ;;
+esac
+
+if [ -n "$remote_control_choice" ]; then
+    remote_control_decision="$remote_control_choice"
+    remote_control_source="explicit option"
+elif [ "$existing_remote_control" = "disabled" ] || [ "$existing_remote_control" = "enabled" ]; then
+    remote_control_decision="$existing_remote_control"
+    remote_control_source="kept from the existing service"
+else
+    remote_control_decision="disabled"
+    remote_control_source="default for new installations"
+fi
+
+if [ "$remote_control_decision" = "enabled" ]; then
+    case " $komari_args " in
+        *" --disable-web-ssh "*|*" --disable-remote-control "*)
+            log_error "Conflicting options: remote control is enabled but a disabling flag was passed through."
+            exit 1
+            ;;
+    esac
+fi
+log_config "  Remote control decision: ${GREEN}${remote_control_decision}${NC} (${remote_control_source})"
 if [ -n "$install_version" ]; then
     log_config "  Specified agent version: ${GREEN}$install_version${NC}"
 else
@@ -442,6 +556,41 @@ if [ "$EUID" -eq 0 ] && [ "$service_user" != "root" ]; then
     chown "$service_user" "$komari_agent_path"
 fi
 log_success "Komari-agent installed to ${GREEN}$komari_agent_path${NC}"
+
+# Apply the remote control decision to the service arguments. The flag name
+# falls back to the historical spelling when the installed binary does not know
+# the newer alias yet.
+apply_remote_control_args() {
+    if [ "$remote_control_decision" = "enabled" ]; then
+        log_config "  Remote control: enabled (${remote_control_source})"
+        return
+    fi
+
+    case " $komari_args " in
+        *" --disable-web-ssh "*|*" --disable-remote-control "*)
+            log_config "  Remote control: disabled (${remote_control_source})"
+            return
+            ;;
+    esac
+
+    flag="--disable-web-ssh"
+    if [ -x "$komari_agent_path" ]; then
+        if command -v timeout >/dev/null 2>&1; then
+            help_output=$(timeout 10 "$komari_agent_path" --help </dev/null 2>&1 || true)
+        else
+            help_output=$("$komari_agent_path" --help </dev/null 2>&1 || true)
+        fi
+        case "$help_output" in
+            *--disable-remote-control*)
+                flag="--disable-remote-control"
+                ;;
+        esac
+    fi
+
+    komari_args="${komari_args:+$komari_args }$flag"
+    log_config "  Remote control: disabled via ${flag} (${remote_control_source})"
+}
+apply_remote_control_args
 
 # Detect init system and configure service
 log_step "Configuring system service..."
