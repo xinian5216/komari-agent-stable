@@ -25,7 +25,8 @@
 
 ## 3. 本 fork 的改动（相对上游基线）
 
-**唯一目的：建立本 fork 自己的安装、更新与 Release 来源。业务逻辑与 v2 协议行为不变。**
+初始目的为建立本 fork 自己的安装、更新与 Release 来源；后续在不破坏 v2 兼容性的前提下，加入了
+远控最小权限、能力上报和供应链校验。所有新增协议字段均为可选字段。
 
 1. `install.sh` / `install.ps1`：owner/repo 集中为脚本顶部的 `REPO_OWNER` / `REPO_NAME` /
    `GITHUB_API_BASE` / `GITHUB_RELEASE_BASE`（可用环境变量覆盖），并把所有 GitHub API 与
@@ -34,11 +35,20 @@
    改为 `xinian5216/komari-agent-stable`（仍可用 `-ldflags` 覆盖）。
 3. 删除 `.github/workflows/generate-release-notes.yml`（依赖 `OPENAI_API_KEY`，
    本 fork 的发版说明由人工维护）。以普通提交删除，**保留 git 历史**。
+4. 新增官方 Agent 原地接管脚本：保留 endpoint、token 与全部 systemd 参数，备份旧二进制后切换到
+   本 fork，并支持状态检查与回滚。
+5. 安装、迁移和自更新加入发布校验和验证；缺失或不匹配时 fail closed，并兼容单资产 `.sha256` 与
+   `SHA256SUMS`。
+6. 新安装默认仅监控，远程命令、终端和文件能力改为显式 opt-in；增加本地高权限警告、
+   `--disable-remote-control` 别名及 Linux/Windows 权限识别。
+7. v2 `agent.report` 新增可选的 `capabilities` / `privilege_level` 上报，Server 与 Web 据此实施门禁；
+   旧端忽略新字段时保持兼容。
+8. Release / Docker / Snapshot 加入不可变资产守卫、校验和、真实迁移测试及供应链硬门禁。
 
-## 4. 明确不改动的部分
+## 4. 兼容性边界
 
-- **v2 协议与线上行为**：`protocol/`、`server/`、`ws/`、`terminal/`、`monitoring/` 等业务代码未改；
-  Agent 仍按官方 v2 协议与 Komari 服务端通信，服务端与旧 Agent 的兼容性不变。
+- **v2 既有协议不变**：已有方法和字段未改名或删除；新增 capability 字段可选，旧 Server/Agent 可忽略。
+- 监控数据语义、采集周期、节点 token 与 endpoint 格式保持不变。
 - Go module path 仍为 `github.com/komari-monitor/komari-agent`（改 module path 会波及全仓库
   import 并破坏与上游的对照关系）。
 - `LICENSE`、版权声明、上游署名链接。
