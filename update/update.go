@@ -1,6 +1,7 @@
 package update
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,8 +15,8 @@ import (
 	"time"
 
 	"github.com/blang/semver"
+	goUpdate "github.com/inconshreveable/go-update"
 	"github.com/komari-monitor/komari-agent/dnsresolver"
-	"github.com/rhysd/go-github-selfupdate/selfupdate"
 )
 
 var (
@@ -28,8 +29,13 @@ var (
 
 const (
 	snapshotVersionPrefix = "Snapshot-"
-	containerMarkerPath   = "/.komari-agent-container"
-	githubAPIBaseURL      = "https://api.github.com"
+)
+
+// The GitHub endpoint and the container marker are variables so that tests can
+// point them at a local server or a temporary marker file.
+var (
+	githubAPIBaseURL    = "https://api.github.com"
+	containerMarkerPath = "/.komari-agent-container"
 )
 
 type buildTrack int
@@ -57,6 +63,8 @@ type githubReleaseAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+// snapshotReleaseCandidate is a resolved release that can be installed on this
+// platform. It is shared by the stable and the snapshot update track.
 type snapshotReleaseCandidate struct {
 	TagName     string
 	Name        string
@@ -64,6 +72,7 @@ type snapshotReleaseCandidate struct {
 	HTMLURL     string
 	PublishedAt time.Time
 	Asset       githubReleaseAsset
+	Source      githubRelease
 }
 
 // parseVersion 解析可能带有 v/V 前缀，以及预发布或构建元数据的版本字符串
@@ -103,6 +112,8 @@ func findReleaseAsset(release githubRelease, assetName string) (githubReleaseAss
 	return githubReleaseAsset{}, false
 }
 
+// selectLatestSnapshotRelease picks the newest snapshot (prerelease) build that
+// carries the asset for this platform.
 func selectLatestSnapshotRelease(releases []githubRelease, assetName string) (snapshotReleaseCandidate, bool) {
 	var latest snapshotReleaseCandidate
 	found := false
@@ -124,12 +135,57 @@ func selectLatestSnapshotRelease(releases []githubRelease, assetName string) (sn
 			HTMLURL:     release.HTMLURL,
 			PublishedAt: release.PublishedAt,
 			Asset:       asset,
+			Source:      release,
 		}
 
 		if !found ||
 			candidate.PublishedAt.After(latest.PublishedAt) ||
 			(candidate.PublishedAt.Equal(latest.PublishedAt) && candidate.TagName > latest.TagName) {
 			latest = candidate
+			found = true
+		}
+	}
+
+	return latest, found
+}
+
+// selectLatestStableRelease picks the highest semantic version among the
+// published, non-prerelease releases that carry the asset for this platform.
+func selectLatestStableRelease(releases []githubRelease, assetName string) (snapshotReleaseCandidate, bool) {
+	var latest snapshotReleaseCandidate
+	var latestVersion semver.Version
+	found := false
+
+	for _, release := range releases {
+		if release.Draft || release.Prerelease {
+			continue
+		}
+
+		asset, ok := findReleaseAsset(release, assetName)
+		if !ok {
+			continue
+		}
+
+		version, err := parseVersion(release.TagName)
+		if err != nil {
+			continue
+		}
+
+		candidate := snapshotReleaseCandidate{
+			TagName:     release.TagName,
+			Name:        release.Name,
+			Body:        release.Body,
+			HTMLURL:     release.HTMLURL,
+			PublishedAt: release.PublishedAt,
+			Asset:       asset,
+			Source:      release,
+		}
+
+		if !found ||
+			version.GT(latestVersion) ||
+			(version.EQ(latestVersion) && candidate.TagName > latest.TagName) {
+			latest = candidate
+			latestVersion = version
 			found = true
 		}
 	}
@@ -225,21 +281,42 @@ func currentExecutablePath() (string, error) {
 	return cmdPath, nil
 }
 
-func selfUpdateReleaseFromSnapshot(owner, repo string, candidate snapshotReleaseCandidate) *selfupdate.Release {
-	publishedAt := candidate.PublishedAt
-	return &selfupdate.Release{
-		Version:           semver.Version{},
-		AssetURL:          candidate.Asset.BrowserDownloadURL,
-		AssetByteSize:     candidate.Asset.Size,
-		AssetID:           candidate.Asset.ID,
-		ValidationAssetID: -1,
-		URL:               candidate.HTMLURL,
-		ReleaseNotes:      candidate.Body,
-		Name:              candidate.Name,
-		PublishedAt:       &publishedAt,
-		RepoOwner:         owner,
-		RepoName:          repo,
+// applyVerifiedUpdate downloads a release asset, verifies it against the
+// checksum published in the same release and only then replaces cmdPath.
+//
+// It fails closed: any missing, malformed or mismatched checksum aborts the
+// update and leaves the running binary untouched.
+func applyVerifiedUpdate(cmdPath string, release githubRelease, asset githubReleaseAsset) error {
+	expected, source, err := resolveExpectedChecksum(http.DefaultClient, release, asset.Name)
+	if err != nil {
+		return err
 	}
+
+	tmpPath, err := verifiedDownload(http.DefaultClient, asset.BrowserDownloadURL, expected, asset.Size, filepath.Dir(cmdPath))
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmpPath)
+
+	sum, err := hex.DecodeString(expected)
+	if err != nil {
+		return checksumErrorf("invalid checksum %q from %s", expected, source)
+	}
+
+	file, err := os.Open(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to open verified download: %w", err)
+	}
+	defer file.Close()
+
+	log.Printf("Verified %s against %s (%s)", asset.Name, source, expected)
+	if err := goUpdate.Apply(file, goUpdate.Options{TargetPath: cmdPath, Checksum: sum}); err != nil {
+		if rollbackErr := goUpdate.RollbackError(err); rollbackErr != nil {
+			log.Printf("[ERROR] failed to roll back %s: %v", cmdPath, rollbackErr)
+		}
+		return fmt.Errorf("failed to replace %s: %w", cmdPath, err)
+	}
+	return nil
 }
 
 func DoUpdateWorks() {
@@ -249,34 +326,55 @@ func DoUpdateWorks() {
 	}
 }
 
-func checkAndUpdateStable(currentSemVer semver.Version, updater *selfupdate.Updater) error {
-	latest, err := updater.UpdateSelf(currentSemVer, Repo)
-	if err != nil {
-		return fmt.Errorf("failed to check for updates: %v", err)
+func checkAndUpdateStable(currentSemVer semver.Version) error {
+	if isContainerAgent() {
+		log.Println("Agent is running in a container; skip binary self-update. Refresh the container image instead.")
+		return nil
 	}
 
-	if latest.Version.Equals(currentSemVer) {
+	owner, repo, err := splitRepoSlug(Repo)
+	if err != nil {
+		return err
+	}
+
+	releases, err := listGitHubReleases(owner, repo)
+	if err != nil {
+		return err
+	}
+
+	assetName := expectedAssetName(runtime.GOOS, runtime.GOARCH)
+	latest, found := selectLatestStableRelease(releases, assetName)
+	if !found {
+		log.Printf("No suitable release asset was found for %s. Current version is considered up-to-date.", assetName)
+		return nil
+	}
+
+	latestVersion, err := parseVersion(latest.TagName)
+	if err != nil {
+		return fmt.Errorf("failed to parse release tag %q: %w", latest.TagName, err)
+	}
+	if !needUpdate(currentSemVer, latestVersion) {
 		log.Println("Current version is the latest:", CurrentVersion)
 		return nil
 	}
-	// Default is installed as a service, so don't automatically restart
-	//execPath, err := os.Executable()
-	//if err != nil {
-	//	return fmt.Errorf("failed to get current executable path: %v", err)
-	//}
 
-	// _, err = os.StartProcess(execPath, os.Args, &os.ProcAttr{
-	// 	Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-	// })
-	// if err != nil {
-	// 	return fmt.Errorf("failed to restart program: %v", err)
-	// }
-	log.Printf("Successfully updated to version %s\n", latest.Version)
+	cmdPath, err := currentExecutablePath()
+	if err != nil {
+		return fmt.Errorf("failed to resolve current executable path: %w", err)
+	}
+
+	log.Printf("Will update %s from %s to %s\n", cmdPath, CurrentVersion, latest.TagName)
+	if err := applyVerifiedUpdate(cmdPath, latest.Source, latest.Asset); err != nil {
+		return fmt.Errorf("failed to update to %s: %w", latest.TagName, err)
+	}
+
+	// Default is installed as a service, so don't automatically restart
+	log.Printf("Successfully updated to version %s\n", latest.TagName)
 	os.Exit(42)
 	return nil
 }
 
-func checkAndUpdateSnapshot(updater *selfupdate.Updater) error {
+func checkAndUpdateSnapshot() error {
 	if isContainerAgent() {
 		log.Println("Snapshot agent is running in a container; skip binary self-update. Refresh the ghcr.io image tagged 'snapshot' instead.")
 		return nil
@@ -310,7 +408,7 @@ func checkAndUpdateSnapshot(updater *selfupdate.Updater) error {
 	}
 
 	log.Printf("Will update %s from snapshot %s to %s\n", cmdPath, CurrentVersion, latest.TagName)
-	if err := updater.UpdateTo(selfUpdateReleaseFromSnapshot(owner, repo, latest), cmdPath); err != nil {
+	if err := applyVerifiedUpdate(cmdPath, latest.Source, latest.Asset); err != nil {
 		return fmt.Errorf("failed to update to snapshot %s: %w", latest.TagName, err)
 	}
 
@@ -324,13 +422,9 @@ func CheckAndUpdate() error {
 	log.Println("Checking update...")
 
 	http.DefaultClient = dnsresolver.GetHTTPClient(60 * time.Second)
-	updater, err := selfupdate.NewUpdater(selfupdate.Config{})
-	if err != nil {
-		return fmt.Errorf("failed to create updater: %v", err)
-	}
 
 	if detectBuildTrack(CurrentVersion) == snapshotTrack {
-		return checkAndUpdateSnapshot(updater)
+		return checkAndUpdateSnapshot()
 	}
 
 	currentSemVer, err := parseVersion(CurrentVersion)
@@ -338,5 +432,5 @@ func CheckAndUpdate() error {
 		return fmt.Errorf("failed to parse current version: %v", err)
 	}
 
-	return checkAndUpdateStable(currentSemVer, updater)
+	return checkAndUpdateStable(currentSemVer)
 }
