@@ -311,6 +311,27 @@ func TestCheckAndUpdateStableAbortsOnChecksumMismatch(t *testing.T) {
 	}
 }
 
+func TestCheckAndUpdateSnapshotAbortsOnChecksumMismatch(t *testing.T) {
+	binary := []byte("tampered snapshot agent binary\n")
+	_, asset := checksumServer(t, binary, strings.Repeat("0", 64)+"\n", true, len(binary))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A snapshot release is a prerelease whose tag starts with Snapshot-.
+		tag := "Snapshot-2026010100"
+		_, _ = fmt.Fprintf(w, `[{"tag_name":%q,"prerelease":true,"assets":[{"id":1,"name":%q,"size":%d,"browser_download_url":%q},{"id":2,"name":%q,"size":65,"browser_download_url":%q}]}]`,
+			tag, asset.Name, len(binary), asset.BrowserDownloadURL, asset.Name+".sha256", asset.BrowserDownloadURL+".sha256")
+	}))
+	defer server.Close()
+
+	originalBase := githubAPIBaseURL
+	githubAPIBaseURL = server.URL
+	t.Cleanup(func() { githubAPIBaseURL = originalBase })
+
+	if err := checkAndUpdateSnapshot(); err == nil {
+		t.Fatal("expected the snapshot update to fail closed on a checksum mismatch")
+	}
+}
+
 func TestCheckAndUpdateSkipsInContainer(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "marker")
 	if err := os.WriteFile(marker, nil, 0644); err != nil {
