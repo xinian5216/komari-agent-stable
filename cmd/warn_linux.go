@@ -165,8 +165,13 @@ func installMOTDWarning(path string, warning securityWarning) (func(), error) {
 }
 
 func renderMOTDWarning(warning securityWarning) string {
+	elevated := ""
+	if warning.Elevated {
+		elevated = fmt.Sprintf("\x1b[31m%s\x1b[0m\n", warningElevatedNote)
+	}
 	return fmt.Sprintf("%s\n"+
 		"\x1b[33m%s\x1b[0m can \x1b[31mexecute commands\x1b[0m and read or \x1b[31mmodify files\x1b[0m on this device as \x1b[33m%s\x1b[0m.\n"+
+		elevated+
 		"%s\n%s\n\nUninstall Komari Agent: %s\n",
 		motdWarningStart, warning.PanelHost, warning.RunAsUser, warningAdvice, warningCompromise, warningUninstallURL)
 }

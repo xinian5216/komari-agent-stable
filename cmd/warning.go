@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/user"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/komari-monitor/komari-agent/server"
 	"github.com/komari-monitor/komari-agent/utils"
 )
 
@@ -17,23 +19,45 @@ const (
 	warningAdvice       = "If you did not set this up, your device may have been accessed without authorization."
 	warningCompromise   = "Stop Komari Agent immediately and check your device for signs of compromise."
 	warningUninstallURL = "https://komari-document.pages.dev/en/faq/uninstall"
+	warningElevatedNote = "This agent runs with elevated privileges (root/Administrator/SYSTEM), so the panel can execute commands and access files with that privilege."
 )
 
 type securityWarning struct {
 	PanelHost string
 	RunAsUser string
+	Elevated  bool
 }
 
 func newSecurityWarning(endpoint, runAsUser string) securityWarning {
 	return securityWarning{
 		PanelHost: warningHost(endpoint),
 		RunAsUser: warningSingleLine(runAsUser),
+		Elevated:  server.RunsElevated(),
 	}
 }
 
 func (w securityWarning) message() string {
-	return fmt.Sprintf("%s can execute commands and read or modify files on this device as %s.\n\n%s\n%s\n\nUninstall Komari Agent: %s",
-		w.PanelHost, w.RunAsUser, warningAdvice, warningCompromise, warningUninstallURL)
+	privilege := ""
+	if w.Elevated {
+		privilege = "\n\n" + warningElevatedNote
+	}
+	return fmt.Sprintf("%s can execute commands and read or modify files on this device as %s.%s\n\n%s\n%s\n\nUninstall Komari Agent: %s",
+		w.PanelHost, w.RunAsUser, privilege, warningAdvice, warningCompromise, warningUninstallURL)
+}
+
+// logRemoteControlStatus prints the effective remote control mode of this
+// agent once at startup. The account name itself is only printed on the device,
+// never reported to the panel.
+func logRemoteControlStatus() {
+	if flags.DisableWebSsh {
+		log.Println("Remote control: disabled (monitoring only)")
+		return
+	}
+	if server.RunsElevated() {
+		log.Println("Remote control: enabled (elevated): this agent can execute commands and access files as root/Administrator/SYSTEM")
+		return
+	}
+	log.Println("Remote control: enabled")
 }
 
 func warningHost(endpoint string) string {

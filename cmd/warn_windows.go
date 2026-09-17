@@ -95,6 +95,11 @@ func ShowToast() {
 	if warningRunAsUser != "" {
 		warning.RunAsUser = warningSingleLine(warningRunAsUser)
 	}
+	// The helper runs in the user's session, so the service's own privilege can
+	// only be forwarded from the process that launched it.
+	if warningElevated {
+		warning.Elevated = true
+	}
 	showSecurityToast(warning)
 }
 
@@ -140,7 +145,7 @@ func escapeToastText(text string) string {
 }
 
 func warningHelperArgs(warning securityWarning) []string {
-	return []string{"--show-warning", "--warning-panel-host", warning.PanelHost, "--warning-run-as-user", warning.RunAsUser}
+	return []string{"--show-warning", "--warning-panel-host", warning.PanelHost, "--warning-run-as-user", warning.RunAsUser, "--warning-elevated", fmt.Sprintf("%t", warning.Elevated)}
 }
 
 // ensureStartMenuShortcut 使用 WScript.Shell 创建 .lnk 并设置 AppUserModelID
