@@ -27,6 +27,7 @@ import (
 var flags = pkg_flags.GlobalConfig
 
 var warningPanelHost, warningRunAsUser string
+var warningElevated bool
 
 var RootCmd = &cobra.Command{
 	Use:   "komari-agent",
@@ -85,6 +86,7 @@ var RootCmd = &cobra.Command{
 
 		log.Println("Komari Agent", update.CurrentVersion)
 		log.Println("Github Repo:", update.Repo)
+		logRemoteControlStatus()
 
 		// 设置 DNS 解析行为
 		if flags.CustomDNS != "" {
@@ -161,7 +163,10 @@ func init() {
 	//RootCmd.MarkPersistentFlagRequired("endpoint")
 	RootCmd.PersistentFlags().StringVar(&flags.AutoDiscoveryKey, "auto-discovery", "", "Auto discovery key for the agent")
 	RootCmd.PersistentFlags().BoolVar(&flags.DisableAutoUpdate, "disable-auto-update", false, "Disable automatic updates")
-	RootCmd.PersistentFlags().BoolVar(&flags.DisableWebSsh, "disable-web-ssh", false, "Disable remote control(web ssh and rce)")
+	RootCmd.PersistentFlags().BoolVar(&flags.DisableWebSsh, "disable-web-ssh", false, "Disable remote control (command execution, web terminal, file manager)")
+	// --disable-remote-control is the descriptive alias of --disable-web-ssh and
+	// controls exactly the same configuration value. Both names stay supported.
+	RootCmd.PersistentFlags().BoolVar(&flags.DisableWebSsh, "disable-remote-control", false, "Alias of --disable-web-ssh: disable remote control (command execution, web terminal, file manager)")
 	//RootCmd.PersistentFlags().BoolVar(&flags.MemoryModeAvailable, "memory-mode-available", false, "[deprecated]Report memory as available instead of used.")
 	RootCmd.PersistentFlags().Float64VarP(&flags.Interval, "interval", "i", 3.0, "Interval in seconds")
 	RootCmd.PersistentFlags().BoolVarP(&flags.IgnoreUnsafeCert, "ignore-unsafe-cert", "u", false, "Ignore unsafe certificate errors")
@@ -179,8 +184,10 @@ func init() {
 	RootCmd.PersistentFlags().BoolVar(&flags.ShowWarning, "show-warning", false, "Show security warning on Windows, run once as a subprocess")
 	RootCmd.PersistentFlags().StringVar(&warningPanelHost, "warning-panel-host", "", "Panel host shown by the notification helper")
 	RootCmd.PersistentFlags().StringVar(&warningRunAsUser, "warning-run-as-user", "", "Agent account shown by the notification helper")
+	RootCmd.PersistentFlags().BoolVar(&warningElevated, "warning-elevated", false, "Whether the agent service runs with elevated privileges, shown by the notification helper")
 	_ = RootCmd.PersistentFlags().MarkHidden("warning-panel-host")
 	_ = RootCmd.PersistentFlags().MarkHidden("warning-run-as-user")
+	_ = RootCmd.PersistentFlags().MarkHidden("warning-elevated")
 	RootCmd.PersistentFlags().StringVar(&flags.CustomIpv4, "custom-ipv4", "", "Custom IPv4 address to use")
 	RootCmd.PersistentFlags().StringVar(&flags.CustomIpv6, "custom-ipv6", "", "Custom IPv6 address to use")
 	RootCmd.PersistentFlags().BoolVar(&flags.GetIpAddrFromNic, "get-ip-addr-from-nic", false, "Get IP address from network interface")
