@@ -365,3 +365,51 @@ func TestSelectLatestStableRelease(t *testing.T) {
 		t.Fatal("selected a release from an empty list")
 	}
 }
+
+// TestPublishedReleaseChecksumsAreUsable checks the checksum resolver against
+// the real release that is already published. It is skipped by default so the
+// test suite stays offline; run it with KOMARI_AGENT_NETWORK_TEST=1.
+func TestPublishedReleaseChecksumsAreUsable(t *testing.T) {
+	if os.Getenv("KOMARI_AGENT_NETWORK_TEST") != "1" {
+		t.Skip("set KOMARI_AGENT_NETWORK_TEST=1 to verify the published release assets")
+	}
+
+	releases, err := listGitHubReleases("xinian5216", "komari-agent-stable")
+	if err != nil {
+		t.Fatalf("could not list releases: %v", err)
+	}
+
+	var published githubRelease
+	for _, release := range releases {
+		if release.TagName == "v1.5.10-stable.0" {
+			published = release
+			break
+		}
+	}
+	if published.TagName == "" {
+		t.Fatal("release v1.5.10-stable.0 was not found")
+	}
+
+	for _, assetName := range []string{"komari-agent-linux-amd64", "komari-agent-windows-amd64.exe"} {
+		digest, source, err := resolveExpectedChecksum(http.DefaultClient, published, assetName)
+		if err != nil {
+			t.Fatalf("%s: %v", assetName, err)
+		}
+		if len(digest) != 64 {
+			t.Fatalf("%s: unexpected digest %q", assetName, digest)
+		}
+		t.Logf("%s -> %s (%s)", assetName, digest, source)
+	}
+
+	// The manifest resolution must agree with the per-asset file.
+	perAsset, _, err := resolveExpectedChecksum(http.DefaultClient, githubRelease{
+		TagName: published.TagName,
+		Assets:  selectChecksumAssets(published, "komari-agent-linux-amd64")[:1],
+	}, "komari-agent-linux-amd64")
+	if err != nil {
+		t.Fatalf("per-asset checksum: %v", err)
+	}
+	if perAsset == "" {
+		t.Fatal("empty per-asset checksum")
+	}
+}
