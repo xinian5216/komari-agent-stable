@@ -1,0 +1,52 @@
+name: supply-chain-ci
+
+# Supply chain gates:
+#   * the release immutability guard (self-test, no network);
+#   * the installers and the migration script refuse unverified binaries and
+#     leave an existing installation untouched on any checksum failure;
+#   * the release workflows keep their required ref and immutability properties.
+
+on:
+  push:
+    branches: [stable]
+  pull_request:
+    branches: [stable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-guard:
+    name: release guard self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run the guard self-test
+        run: bash .github/tests/test-release-guard.sh
+
+  installer-and-migration:
+    name: installers and migration refuse unverified binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Supply chain tests
+        # The script starts a local HTTP release server in the background;
+        # sending its output to a file keeps those children from holding the
+        # step's stdout, which would stall the job after the script exits.
+        run: |
+          set +e
+          sudo timeout 900 bash .github/tests/test-supply-chain.sh </dev/null > /tmp/supply-chain.log 2>&1
+          status=$?
+          cat /tmp/supply-chain.log
+          exit $status
