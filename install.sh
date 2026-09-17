@@ -339,9 +339,6 @@ uninstall_previous() {
     fi
 }
 
-# Uninstall previous installation
-uninstall_previous
-
 install_dependencies() {
     log_step "Checking and installing dependencies..."
 
@@ -520,6 +517,113 @@ if [ "$EUID" -eq 0 ] && [ "$service_user" != "root" ]; then
     chown "$service_user" "$target_dir"
 fi
 
+# ---------------------------------------------------------------------------
+# Checksum verification (fail closed)
+#
+# A release binary is only installed after its SHA256 has been verified against
+# the checksum assets of the *same* release. Missing, malformed or mismatching
+# checksums abort the installation: nothing is written to the final path and an
+# already installed agent is left untouched.
+# ---------------------------------------------------------------------------
+
+# sha256_of <file> -> lowercase hex digest, or a hard failure when no SHA256
+# tool is available (the installer must never skip verification).
+sha256_of() {
+    local file="$1" digest
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest="$(sha256sum "$file" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        digest="$(shasum -a 256 "$file" | awk '{print $1}')"
+    elif command -v openssl >/dev/null 2>&1; then
+        digest="$(openssl dgst -sha256 "$file" | awk '{print $NF}')"
+    else
+        log_error "No SHA256 tool found (need sha256sum, shasum -a 256 or openssl dgst -sha256)."
+        log_error "Verification cannot be skipped, so the installation stops here."
+        return 1
+    fi
+    if [ -z "$digest" ]; then
+        log_error "The SHA256 tool produced no digest for $file"
+        return 1
+    fi
+    printf '%s' "$digest" | tr 'A-F' 'a-f'
+}
+
+is_sha256_hex() {
+    [ -n "$1" ] || return 1
+    [ "${#1}" -eq 64 ] || return 1
+    case "$1" in
+        *[!0-9a-fA-F]*) return 1 ;;
+    esac
+    return 0
+}
+
+# checksum_from_asset_file <file> <asset-name> -> digest from a <asset>.sha256
+# file. Exactly one line, optionally followed by the asset name.
+checksum_from_asset_file() {
+    local file="$1" asset="$2" content lines digest name
+    content="$(tr -d '\r' < "$file" | awk 'NF { print }')"
+    lines="$(printf '%s\n' "$content" | grep -c . || true)"
+    [ "$lines" = "1" ] || return 1
+    digest="${content%% *}"
+    name="${content#"$digest"}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    is_sha256_hex "$digest" || return 1
+    if [ -n "$name" ]; then
+        [ "$name" = "$asset" ] || [ "$name" = "*$asset" ] || return 1
+    fi
+    printf '%s' "$digest" | tr 'A-F' 'a-f'
+}
+
+# checksum_from_sums_file <file> <asset-name> -> digest from SHA256SUMS.
+# Entries are matched by exact file name, never by position.
+checksum_from_sums_file() {
+    local file="$1" asset="$2" line digest_part rest name lowered found=""
+    while IFS= read -r line; do
+        line="$(printf '%s' "$line" | tr -d '\r')"
+        [ -n "$line" ] || continue
+        digest_part="${line%%[[:space:]]*}"
+        rest="${line#"$digest_part"}"
+        rest="${rest#"${rest%%[![:space:]]*}"}"
+        name="${rest%%[[:space:]]*}"
+        is_sha256_hex "$digest_part" || return 1
+        [ -n "$name" ] || return 1
+        [ "$name" = "$asset" ] || [ "$name" = "*$asset" ] || continue
+        lowered="$(printf '%s' "$digest_part" | tr 'A-F' 'a-f')"
+        if [ -n "$found" ] && [ "$found" != "$lowered" ]; then
+            return 1
+        fi
+        found="$lowered"
+    done < "$file"
+    [ -n "$found" ] || return 1
+    printf '%s' "$found"
+}
+
+# expected_checksum <base-url> <asset-name> -> digest published for that asset,
+# preferring <asset>.sha256 and falling back to SHA256SUMS.
+expected_checksum() {
+    local base="$1" asset="$2" tmp digest
+    tmp="$(mktemp)" || return 1
+
+    if curl -fsSL --connect-timeout 15 -o "$tmp" "${base}/${asset}.sha256" 2>/dev/null && [ -s "$tmp" ]; then
+        if digest="$(checksum_from_asset_file "$tmp" "$asset")"; then
+            rm -f "$tmp"
+            printf '%s' "$digest"
+            return 0
+        fi
+    fi
+
+    if curl -fsSL --connect-timeout 15 -o "$tmp" "${base}/SHA256SUMS" 2>/dev/null && [ -s "$tmp" ]; then
+        if digest="$(checksum_from_sums_file "$tmp" "$asset")"; then
+            rm -f "$tmp"
+            printf '%s' "$digest"
+            return 0
+        fi
+    fi
+
+    rm -f "$tmp"
+    return 1
+}
+
 # Download with automatic mirror fallback.
 # 直连失败自动依次尝试常见 GitHub 加速镜像, 可用 --install-no-mirror 关闭.
 if [ -n "$github_proxy" ] || [ "$install_no_mirror" = "true" ]; then
@@ -533,25 +637,54 @@ https://ghproxy.net/${download_url}
 "
 fi
 
+# The binary is downloaded to a temporary file and only moved into place after
+# its checksum has been verified against the same release.
 dl_ok=""
+download_tmp="${komari_agent_path}.download.$$"
 for u in $download_urls; do
     log_step "Downloading $file_name ..."
     log_info "URL: ${CYAN}$u${NC}"
-    if curl -fL --connect-timeout 15 -o "$komari_agent_path" "$u" && [ -s "$komari_agent_path" ]; then
-        dl_ok=1
-        break
+    rm -f "$download_tmp"
+    if ! curl -fL --connect-timeout 15 -o "$download_tmp" "$u" || [ ! -s "$download_tmp" ]; then
+        continue
     fi
-    rm -f "$komari_agent_path"
+
+    base_url="${u%/*}"
+    expected="$(expected_checksum "$base_url" "$file_name" || true)"
+    if [ -z "$expected" ]; then
+        log_error "No usable checksum for ${file_name} in ${base_url}"
+        log_error "Refusing to install an unverified binary"
+        rm -f "$download_tmp"
+        continue
+    fi
+
+    actual="$(sha256_of "$download_tmp")" || { rm -f "$download_tmp"; exit 1; }
+    if [ "$actual" != "$expected" ]; then
+        log_error "Checksum mismatch for ${file_name}: expected ${expected}, got ${actual}"
+        rm -f "$download_tmp"
+        continue
+    fi
+
+    log_success "Checksum verified (SHA256 ${actual})"
+    dl_ok=1
+    break
 done
 
 if [ -z "$dl_ok" ]; then
-    log_error "Download failed from all sources (direct + mirrors)"
-    log_error "Retry later, or specify --install-ghproxy <mirror-prefix> manually"
+    rm -f "$download_tmp"
+    log_error "Download or checksum verification failed from all sources (direct + mirrors)"
+    log_error "Nothing was installed: an existing agent binary and its service are unchanged"
     exit 1
 fi
 
-# Set executable permissions
-chmod +x "$komari_agent_path"
+# Only now, with a verified binary in hand, is the previous installation torn
+# down: a checksum failure above leaves the running agent and its service intact.
+# Uninstall previous installation
+uninstall_previous
+
+# Set executable permissions on the verified download, then move it into place
+chmod +x "$download_tmp"
+mv -f "$download_tmp" "$komari_agent_path"
 if [ "$EUID" -eq 0 ] && [ "$service_user" != "root" ]; then
     chown "$service_user" "$komari_agent_path"
 fi

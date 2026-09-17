@@ -306,7 +306,6 @@ function Uninstall-Previous {
         Remove-Item $AgentPath -Force
     }
 }
-Uninstall-Previous
 
 function Get-LatestSnapshotVersion {
     param([Parameter(Mandatory = $true)][string]$AssetName)
@@ -387,16 +386,96 @@ Log-Success "Installing Komari Agent version: $versionToInstall"
 $BinaryName = "komari-agent-windows-$arch.exe"
 $DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/$GitHubReleaseBase/$RepoSlug/releases/download/$versionToInstall/$BinaryName" } else { "$GitHubReleaseBase/$RepoSlug/releases/download/$versionToInstall/$BinaryName" }
 
-# Download and install
+# Download and install (fail closed)
+#
+# The binary is downloaded to a temporary file and only moved to its final path
+# after its SHA256 has been verified against the checksum assets of the same
+# release. A missing, malformed or mismatching checksum aborts the installation
+# and leaves an already installed agent untouched.
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Log-Info "URL: $DownloadUrl"
+
+$ChecksumBaseUrl = $DownloadUrl.Substring(0, $DownloadUrl.LastIndexOf("/"))
+$DownloadTemp = "$AgentPath.download"
+
+function Get-ExpectedChecksum {
+    param([string]$Base, [string]$Asset)
+
+    $tmp = Join-Path $env:TEMP ("komari-checksum-" + [guid]::NewGuid().ToString("N"))
+    try {
+        # 1) <asset>.sha256
+        try {
+            Invoke-WebRequest -Uri "$Base/$Asset.sha256" -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+            $lines = @(Get-Content -Path $tmp -ErrorAction Stop | Where-Object { $_.Trim() -ne "" })
+            if ($lines.Count -eq 1) {
+                $parts = $lines[0].Trim() -split '\s+'
+                if ($parts[0] -match '^[0-9a-fA-F]{64}$') {
+                    if ($parts.Count -eq 1 -or $parts[1].TrimStart('*') -eq $Asset) {
+                        return $parts[0].ToLower()
+                    }
+                }
+            }
+        }
+        catch { }
+
+        # 2) SHA256SUMS, matched by exact file name
+        try {
+            Invoke-WebRequest -Uri "$Base/SHA256SUMS" -OutFile $tmp -UseBasicParsing -ErrorAction Stop
+            $found = $null
+            foreach ($entry in (Get-Content -Path $tmp -ErrorAction Stop)) {
+                $trimmed = $entry.Trim()
+                if ($trimmed -eq "") { continue }
+                $parts = $trimmed -split '\s+'
+                if ($parts.Count -lt 2) { return $null }
+                if ($parts[0] -notmatch '^[0-9a-fA-F]{64}$') { return $null }
+                if ($parts[1].TrimStart('*') -ne $Asset) { continue }
+                $candidate = $parts[0].ToLower()
+                if ($found -and $found -ne $candidate) { return $null }
+                $found = $candidate
+            }
+            if ($found) { return $found }
+        }
+        catch { }
+
+        return $null
+    }
+    finally {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$ExpectedChecksum = Get-ExpectedChecksum -Base $ChecksumBaseUrl -Asset $BinaryName
+if (-not $ExpectedChecksum) {
+    Log-Error "No usable checksum for $BinaryName in $ChecksumBaseUrl"
+    Log-Error "Refusing to install an unverified binary; an existing installation is unchanged"
+    exit 1
+}
+
 try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $AgentPath -UseBasicParsing
+    Remove-Item $DownloadTemp -Force -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri $DownloadUrl -OutFile $DownloadTemp -UseBasicParsing
+    if (-not (Test-Path $DownloadTemp)) { throw "the download produced no file" }
 }
 catch {
     Log-Error "Download failed: $_"
+    Remove-Item $DownloadTemp -Force -ErrorAction SilentlyContinue
     exit 1
 }
+
+$ActualChecksum = (Get-FileHash -Path $DownloadTemp -Algorithm SHA256).Hash.ToLower()
+if ($ActualChecksum -ne $ExpectedChecksum) {
+    Log-Error "Checksum mismatch for ${BinaryName}: expected $ExpectedChecksum, got $ActualChecksum"
+    Remove-Item $DownloadTemp -Force -ErrorAction SilentlyContinue
+    Log-Error "Nothing was installed: an existing agent binary and its service are unchanged"
+    exit 1
+}
+Log-Success "Checksum verified (SHA256 $ActualChecksum)"
+
+# Only now, with a verified binary in hand, is the previous installation torn
+# down: a checksum failure above leaves the running agent and its service intact.
+Uninstall-Previous
+
+Move-Item -Path $DownloadTemp -Destination $AgentPath -Force
 Log-Success "Downloaded and saved to $AgentPath"
 
 # Register and start service
