@@ -537,12 +537,14 @@ sha256_of() {
     elif command -v openssl >/dev/null 2>&1; then
         digest="$(openssl dgst -sha256 "$file" | awk '{print $NF}')"
     else
-        log_error "No SHA256 tool found (need sha256sum, shasum -a 256 or openssl dgst -sha256)."
-        log_error "Verification cannot be skipped, so the installation stops here."
+        # Written to stderr: sha256_of is called from a command substitution,
+        # where stdout would be captured and the reason would be lost.
+        log_error "No SHA256 tool found (need sha256sum, shasum -a 256 or openssl dgst -sha256)." >&2
+        log_error "Verification cannot be skipped, so the installation stops here." >&2
         return 1
     fi
     if [ -z "$digest" ]; then
-        log_error "The SHA256 tool produced no digest for $file"
+        log_error "The SHA256 tool produced no digest for $file" >&2
         return 1
     fi
     printf '%s' "$digest" | tr 'A-F' 'a-f'
