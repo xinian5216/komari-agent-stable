@@ -1,0 +1,157 @@
+name: remote-control-ci
+
+# Remote control hardening gates:
+#   * the agent unit tests, including the new capability / refusal tests
+#   * the installer policy (default monitoring only, preserved state, opt-in)
+#   * the wire payload produced by the real binary in both modes
+
+on:
+  push:
+    branches: [stable]
+  pull_request:
+    branches: [stable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Cross compile
+        run: |
+          GOOS=linux GOARCH=amd64 go build ./...
+          GOOS=linux GOARCH=arm64 go build ./...
+          GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: Remote control security tests
+        run: |
+          go test ./server/ -run 'RemoteControl|Capabilities|Privilege|FileOperationsRejected' -v
+          go test ./terminal/ -run 'RemoteControl' -v
+          go test ./cmd/ -v
+          go test ./update/ -run 'Checksum|Verified|SelectLatestStable|CheckAndUpdate' -v
+
+      # TestICMPPing, TestTCPPing and TestHTTPPing talk to public hosts and need
+      # raw socket privileges; they fail on an unmodified checkout in this
+      # environment as well (verified against the baseline), so they are not part
+      # of the gate. Everything else must pass.
+      - name: go test (deterministic suite)
+        run: |
+          go test ./... -skip 'TestICMPPing|TestTCPPing|TestHTTPPing'
+
+  installer-policy:
+    name: installer remote control policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Installer policy tests
+        run: sudo bash .github/tests/test-install-remote-control.sh
+
+  wire-capabilities:
+    name: wire capabilities of both modes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the agent
+        run: GOOS=linux GOARCH=amd64 go build -o /tmp/komari-agent .
+
+      - name: Capture what a monitoring-only agent reports
+        run: |
+          cat > /tmp/capture.py <<'PY'
+          import http.server, json
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  length = int(self.headers.get('Content-Length', 0))
+                  body = self.rfile.read(length)
+                  try:
+                      payload = json.loads(body.decode('utf-8'))
+                  except Exception:
+                      payload = {}
+                  if payload.get('method') == 'agent.basicInfo':
+                      open('/tmp/captured-basicinfo.json', 'wb').write(body)
+                  self.send_response(200)
+                  self.send_header('Content-Type', 'application/json')
+                  self.end_headers()
+                  self.wfile.write(b'{"jsonrpc":"2.0","id":1,"result":{}}')
+
+              def log_message(self, *args):
+                  pass
+
+          http.server.HTTPServer(('127.0.0.1', 18080), Handler).serve_forever()
+          PY
+          python3 /tmp/capture.py &
+          sleep 1
+          timeout 20 /tmp/komari-agent --endpoint http://127.0.0.1:18080 --token test-token \
+            --disable-remote-control --disable-compression > /tmp/agent-disabled.log 2>&1 || true
+          echo "--- agent log (remote control disabled) ---"
+          cat /tmp/agent-disabled.log
+          echo "--- captured basic info ---"
+          cat /tmp/captured-basicinfo.json
+          echo
+
+      - name: Assert the monitoring-only capabilities
+        run: |
+          python3 - <<'PY'
+          import json
+
+          payload = json.loads(open('/tmp/captured-basicinfo.json', 'rb').read().decode('utf-8'))
+          assert payload.get('method') == 'agent.basicInfo', payload.get('method')
+          params = payload['params']
+          capabilities = params.get('capabilities')
+          assert capabilities == ['ping', 'message', 'event'], capabilities
+          assert params.get('privilege_level') in ('elevated', 'standard', 'unknown'), params.get('privilege_level')
+          log = open('/tmp/agent-disabled.log', 'rb').read().decode('utf-8', 'replace')
+          assert 'Remote control: disabled (monitoring only)' in log, log
+          print('OK: monitoring-only agent reported', capabilities, 'privilege_level =', params.get('privilege_level'))
+          PY
+
+      - name: Capture what an opted-in agent reports
+        run: |
+          rm -f /tmp/captured-basicinfo.json
+          python3 /tmp/capture.py &
+          sleep 1
+          timeout 20 /tmp/komari-agent --endpoint http://127.0.0.1:18080 --token test-token \
+            --disable-compression > /tmp/agent-enabled.log 2>&1 || true
+          echo "--- agent log (remote control enabled) ---"
+          cat /tmp/agent-enabled.log
+          echo "--- captured basic info ---"
+          cat /tmp/captured-basicinfo.json
+          echo
+
+      - name: Assert the opted-in capabilities
+        run: |
+          python3 - <<'PY'
+          import json
+
+          payload = json.loads(open('/tmp/captured-basicinfo.json', 'rb').read().decode('utf-8'))
+          capabilities = payload['params']['capabilities']
+          assert capabilities == ['ping', 'message', 'event', 'exec', 'terminal', 'file'], capabilities
+          log = open('/tmp/agent-enabled.log', 'rb').read().decode('utf-8', 'replace')
+          assert 'Remote control: enabled' in log, log
+          print('OK: opted-in agent reported', capabilities)
+          PY
