@@ -167,6 +167,27 @@ jobs:
             echo "Deleting old snapshot release ${tag}..."
             gh release delete "${tag}" --repo "${{ github.repository }}" --cleanup-tag --yes
           done
+
+      - name: Publish checksums for the snapshot binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euxo pipefail
+          # The agent verifies checksums before replacing itself, so a snapshot
+          # without checksum assets would never be installed. Snapshot releases
+          # are rolling (they are deleted and recreated), so no immutability
+          # guard applies here - the hashes are simply derived from the bytes
+          # that were just published.
+          rm -rf dist && mkdir -p dist && cd dist
+          gh release download "${VERSION}" --repo "${{ github.repository }}" \
+            --pattern 'komari-agent-*' --skip-existing
+          rm -f ./*.sha256
+          sha256sum komari-agent-* > SHA256SUMS
+          while read -r sum name; do
+            printf '%s\n' "$sum" > "${name}.sha256"
+          done < SHA256SUMS
+          gh release upload "${VERSION}" SHA256SUMS ./*.sha256 --repo "${{ github.repository }}"
         shell: bash
 
   build-and-push-docker:
