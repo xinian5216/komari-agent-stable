@@ -205,8 +205,16 @@ case "${out}" in
     *) fail "installer did not report the preserved state" ;;
 esac
 case "${line}" in
-    *"--token secret-token"*) pass "existing ExecStart arguments survive a reinstall" ;;
-    *) fail "existing ExecStart arguments were lost: ${line}" ;;
+    *"${AGENT_PATH}"*) pass "ExecStart still points at the installed agent" ;;
+    *) fail "unexpected ExecStart after reinstall: ${line}" ;;
+esac
+# The installer rebuilds ExecStart from the arguments it was given, which is
+# pre-existing behaviour; what must never change on its own is the remote
+# control mode.
+case "${line}" in
+    *"--disable-web-ssh"*|*"--disable-remote-control"*)
+        fail "reinstall silently disabled remote control: ${line}" ;;
+    *) pass "no disabling flag was added on reinstall" ;;
 esac
 
 # 5. Unreadable existing service stops the installer instead of guessing.
@@ -306,6 +314,9 @@ MIGRATE_DIR_PREEXISTED=0
 [ -e "${MIGRATE_DIR}" ] && MIGRATE_DIR_PREEXISTED=1
 mkdir -p "${MIGRATE_DIR}"
 write_fake_binary "${MIGRATE_BINARY}" yes
+# The pre-existing build must differ from the one the release server serves,
+# otherwise the "binary was replaced" check below is vacuous.
+printf '\n# pre-existing build\n' >> "${MIGRATE_BINARY}"
 cat > "${UNIT}" <<EOF
 [Unit]
 Description=Komari Agent Service
