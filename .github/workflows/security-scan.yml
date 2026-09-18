@@ -10,11 +10,6 @@ on:
       - ".github/workflows/security-scan.yml"
   pull_request:
     branches: [stable]
-    paths:
-      - "**/*.go"
-      - "go.mod"
-      - "go.sum"
-      - ".github/workflows/security-scan.yml"
   schedule:
     - cron: "37 2 * * *"
   workflow_dispatch:
@@ -88,3 +83,14 @@ jobs:
       - uses: github/codeql-action/analyze@v4
         with:
           category: /language:go
+
+  security-gate:
+    name: security-gate
+    if: ${{ always() }}
+    needs: [govulncheck, codeql]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require vulnerability and CodeQL scans
+        run: |
+          test "${{ needs.govulncheck.result }}" = success
+          test "${{ needs.codeql.result }}" = success
