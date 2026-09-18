@@ -50,3 +50,14 @@ jobs:
           status=$?
           cat /tmp/supply-chain.log
           exit $status
+
+  supply-chain-gate:
+    name: supply-chain-gate
+    if: ${{ always() }}
+    needs: [release-guard, installer-and-migration]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every supply-chain gate
+        run: |
+          test "${{ needs.release-guard.result }}" = success
+          test "${{ needs.installer-and-migration.result }}" = success

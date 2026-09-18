@@ -159,3 +159,15 @@ jobs:
 
       - name: Run the payload tests that cover both modes
         run: go test ./server/ -run 'ReportEnvelope|BasicInfo|ReportPayload|Capabilities' -v
+
+  required-gate:
+    name: required-gate
+    if: ${{ always() }}
+    needs: [unit-tests, installer-policy, startup-payloads]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every agent CI gate
+        run: |
+          test "${{ needs.unit-tests.result }}" = success
+          test "${{ needs.installer-policy.result }}" = success
+          test "${{ needs.startup-payloads.result }}" = success
