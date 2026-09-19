@@ -9,6 +9,12 @@ name: Agent migration test (official agent -> komari-agent-stable)
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [stable]
+    paths:
+      - "cmd/root.go"
+      - "migrate-komari-agent.sh"
+      - ".github/workflows/migration-test.yml"
   push:
     paths:
       - "migrate-komari-agent.sh"
@@ -88,7 +94,7 @@ jobs:
           After=network.target
           [Service]
           Type=simple
-          ExecStart=/opt/komari/agent -e http://127.0.0.1:25774 -t TESTTOKEN123456 -i 5
+          ExecStart=/opt/komari/agent -e http://127.0.0.1:25774 -t TESTTOKEN123456 -i 5 --disable-web-ssh --disable-remote-control
           WorkingDirectory=/opt/komari
           Restart=always
           [Install]
@@ -123,7 +129,9 @@ jobs:
           grep -q -- "-e http://127.0.0.1:25774" /etc/systemd/system/komari-agent.service
           grep -q -- "-t TESTTOKEN123456" /etc/systemd/system/komari-agent.service
           grep -q -- "-i 5" /etc/systemd/system/komari-agent.service
-          echo "OK: endpoint / token / interval 未被改动"
+          grep -q -- "--disable-web-ssh" /etc/systemd/system/komari-agent.service
+          grep -q -- "--disable-remote-control" /etc/systemd/system/komari-agent.service
+          echo "OK: endpoint / token / interval / legacy no-op flags 未被改动"
 
           echo "--- 2) 二进制已替换为 fork 版本 ---"
           AFTER=$(sudo sha256sum /opt/komari/agent | awk '{print $1}')

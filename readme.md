@@ -32,7 +32,6 @@ export AGENT_TOKEN="your-token"
   "token": "your-token",
   "interval": 3,
   "disable_auto_update": false,
-  "disable_web_ssh": false,
   "ignore_unsafe_cert": false
 }
 ```
@@ -49,7 +48,7 @@ export AGENT_TOKEN="your-token"
 | `token` | `AGENT_TOKEN` | `--token`, `-t` | agent token | `0.0.9` |
 | `interval` | `AGENT_INTERVAL` | `--interval`, `-i` | 数据采集间隔，单位秒 | `0.0.9` |
 | `disable_auto_update` | `AGENT_DISABLE_AUTO_UPDATE` | `--disable-auto-update` | 禁用自动更新 | `0.0.9` |
-| `disable_web_ssh` | `AGENT_DISABLE_WEB_SSH` | `--disable-web-ssh` | 禁用远程控制 | `0.0.9` |
+| `disable_web_ssh` | `AGENT_DISABLE_WEB_SSH` | `--disable-web-ssh`, `--disable-remote-control` | 已弃用的隐藏 no-op，仅为旧服务升级兼容保留一个发布周期 | `0.0.9` |
 | `ignore_unsafe_cert` | `AGENT_IGNORE_UNSAFE_CERT` | `--ignore-unsafe-cert`, `-u` | 忽略不安全证书 | `0.0.9` |
 | `include_nics` | `AGENT_INCLUDE_NICS` | `--include-nics` | 仅统计指定网卡，逗号分隔 | `0.0.22` |
 | `exclude_nics` | `AGENT_EXCLUDE_NICS` | `--exclude-nics` | 排除指定网卡，逗号分隔 | `0.0.22` |
@@ -68,6 +67,15 @@ export AGENT_TOKEN="your-token"
 ```
 
 详见 `cmd/flags/flags.go` 及 `cmd/root.go`
+
+## 安全边界：仅监控
+
+本 fork 的发布二进制不包含面板触发的通用命令执行、Web/PTY 终端或任意文件管理与传输实现。
+Agent 只上报 `ping`、`message`、`event` capability；旧 Server 发来的 `agent.exec`、
+`agent.terminal.request`、`agent.file` 请求会以 `method not supported` 明确拒绝。
+
+历史服务命令行中的 `--disable-web-ssh` / `--disable-remote-control` 仍可解析，但已是隐藏 no-op。
+启动日志会打印 `remote control is not compiled into this build`。安装器不再接受启用远控。
 
 ## 安装 / 迁移 / 更新（本 fork）
 
@@ -88,7 +96,7 @@ curl -fsSL https://raw.githubusercontent.com/xinian5216/komari-agent-stable/stab
 curl -fsSL https://raw.githubusercontent.com/xinian5216/komari-agent-stable/stable/migrate-komari-agent.sh | sudo bash -s -- -y
 ```
 
-脚本会：读取现有 systemd 单元里的全部启动参数（endpoint / token / interval 等）并原样保留 →
+脚本会：读取现有 systemd 单元里的全部启动参数（包括历史禁用参数）并原样保留 →
 备份旧二进制 → 下载并校验新二进制 → 替换 → 重启 → 打印日志中的 `Github Repo:` 行确认来源已切换。
 
 **不需要重新添加节点、不需要重新生成 token、不会丢失历史数据。**
