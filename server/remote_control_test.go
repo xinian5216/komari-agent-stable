@@ -10,55 +10,31 @@ import (
 	v2 "github.com/komari-monitor/komari-agent/protocol/v2"
 )
 
-func setRemoteControlDisabled(t *testing.T, disabled bool) {
-	t.Helper()
+func TestCapabilitiesAreAlwaysMonitoringOnly(t *testing.T) {
+	want := []string{"ping", "message", "event"}
 	original := pkg_flags.GlobalConfig.DisableWebSsh
-	pkg_flags.GlobalConfig.DisableWebSsh = disabled
 	t.Cleanup(func() { pkg_flags.GlobalConfig.DisableWebSsh = original })
-}
-
-func TestCapabilitiesFollowRemoteControlFlag(t *testing.T) {
-	cases := []struct {
-		name     string
-		disabled bool
-		want     []string
-	}{
-		{
-			name:     "remote control disabled",
-			disabled: true,
-			want:     []string{"ping", "message", "event"},
-		},
-		{
-			name:     "remote control enabled",
-			disabled: false,
-			want:     []string{"ping", "message", "event", "exec", "terminal", "file"},
-		},
+	for _, legacyValue := range []bool{false, true} {
+		pkg_flags.GlobalConfig.DisableWebSsh = legacyValue
+		if got := Capabilities(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("Capabilities() with legacy flag %t = %v, want %v", legacyValue, got, want)
+		}
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setRemoteControlDisabled(t, tc.disabled)
-			got := Capabilities()
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("Capabilities() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestCapabilitiesNeverAdvertiseRemoteControlWhenDisabled(t *testing.T) {
-	setRemoteControlDisabled(t, true)
-	got := strings.Join(Capabilities(), ",")
-	for _, forbidden := range []string{v2.CapabilityExec, v2.CapabilityTerminal, v2.CapabilityFile} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("disabled agent still advertises %q in capabilities %q", forbidden, got)
+	for _, forbidden := range []string{"exec", "terminal", "file"} {
+		if strings.Contains(strings.Join(Capabilities(), ","), forbidden) {
+			t.Fatalf("monitoring-only agent advertised %q", forbidden)
 		}
 	}
 }
 
-func TestCapabilitiesAllKeepsMonitoringCapabilitiesStable(t *testing.T) {
-	if got := v2.CapabilitiesAll()[:3]; !reflect.DeepEqual(got, v2.CapabilitiesMonitoringOnly()) {
-		t.Fatalf("capability order changed: %v", v2.CapabilitiesAll())
+func TestLegacyRemoteControlMethodsAreRecognizedForRejection(t *testing.T) {
+	for _, method := range []string{v2.MethodAgentExec, v2.MethodAgentTerminal, v2.MethodAgentFile} {
+		if !isUnsupportedRemoteControlMethod(method) {
+			t.Fatalf("legacy method %q is not routed to the fail-closed rejection", method)
+		}
+	}
+	if isUnsupportedRemoteControlMethod(v2.MethodAgentPing) {
+		t.Fatal("ping was incorrectly classified as remote control")
 	}
 }
 
@@ -74,19 +50,7 @@ func TestPrivilegeLevelIsCoarse(t *testing.T) {
 	}
 }
 
-func TestRemoteControlDisabledMirrorsFlag(t *testing.T) {
-	setRemoteControlDisabled(t, true)
-	if !RemoteControlDisabled() {
-		t.Fatal("RemoteControlDisabled() = false while --disable-web-ssh is set")
-	}
-	setRemoteControlDisabled(t, false)
-	if RemoteControlDisabled() {
-		t.Fatal("RemoteControlDisabled() = true while remote control is enabled")
-	}
-}
-
-func TestReportPayloadCarriesRemoteControlInfo(t *testing.T) {
-	setRemoteControlDisabled(t, true)
+func TestReportPayloadCarriesMonitoringOnlyInfo(t *testing.T) {
 	augmented := reportPayload([]byte(`{"cpu":{"usage":1},"uptime":5}`))
 
 	var decoded map[string]interface{}
@@ -97,33 +61,25 @@ func TestReportPayloadCarriesRemoteControlInfo(t *testing.T) {
 		t.Fatalf("existing report fields were lost: %v", decoded)
 	}
 	capabilities, ok := decoded["capabilities"].([]interface{})
-	if !ok {
-		t.Fatalf("capabilities missing from the report: %v", decoded)
+	if !ok || len(capabilities) != 3 {
+		t.Fatalf("capabilities = %v, want ping/message/event", capabilities)
 	}
-	if len(capabilities) != 3 {
-		t.Fatalf("disabled agent reported %v", capabilities)
+	text := string(augmented)
+	for _, forbidden := range []string{`"exec"`, `"terminal"`, `"file"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("report advertised removed remote control: %s", augmented)
+		}
 	}
 	if _, ok := decoded["privilege_level"].(string); !ok {
 		t.Fatalf("privilege level missing from the report: %v", decoded)
 	}
 
-	setRemoteControlDisabled(t, false)
-	if !strings.Contains(string(reportPayload([]byte(`{}`))), `"exec"`) {
-		t.Fatal("enabled agent did not report the exec capability")
-	}
-
-	// A malformed report is passed through untouched instead of being dropped.
 	const broken = `{not json`
 	if got := string(reportPayload([]byte(broken))); got != broken {
 		t.Fatalf("malformed report was rewritten: %q", got)
 	}
 }
 
-// TestBasicInfoPayloadStaysBackwardCompatible guards the contract that broke
-// once: released servers map agent.basicInfo straight onto SQL columns, so an
-// unknown key makes them fail with "no such column" and the agent stops being
-// able to report basic info at all. New fields must go somewhere typed instead
-// (see agent.report).
 func TestBasicInfoPayloadStaysBackwardCompatible(t *testing.T) {
 	allowed := map[string]bool{
 		"cpu_name": true, "cpu_cores": true, "cpu_physical_cores": true,
@@ -131,11 +87,10 @@ func TestBasicInfoPayloadStaysBackwardCompatible(t *testing.T) {
 		"ipv6": true, "mem_total": true, "swap_total": true, "disk_total": true,
 		"gpu_name": true, "virtualization": true, "version": true,
 	}
-
 	payload := basicInfoPayload()
 	for key := range payload {
 		if !allowed[key] {
-			t.Fatalf("agent.basicInfo gained the key %q; released servers reject unknown keys when saving basic info", key)
+			t.Fatalf("agent.basicInfo gained the key %q", key)
 		}
 	}
 	for key := range allowed {

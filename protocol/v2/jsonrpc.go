@@ -61,8 +61,8 @@ type EventResult struct {
 	Events []Event `json:"events,omitempty"`
 }
 
-// FileOperation is metadata-only. File contents travel through the dedicated
-// HTTP transfer endpoint rather than through JSON-RPC.
+// FileOperation and FileResult are retained only to decode legacy Server
+// requests and return a fail-closed rejection. This fork has no file handler.
 type FileOperation struct {
 	UUID      string                 `json:"uuid"`
 	RequestID string                 `json:"request_id"`

@@ -1,9 +1,9 @@
-name: remote-control-ci
+name: monitoring-only-ci
 
-# Remote control hardening gates:
-#   * the agent unit tests, including the new capability / refusal tests
-#   * the installer policy (default monitoring only, preserved state, opt-in)
-#   * the wire payload produced by the real binary in both modes
+# Monitoring-only hard gates:
+#   * removed command/PTY/file implementations cannot return
+#   * legacy protocol requests fail closed
+#   * old disable flags remain hidden no-ops for upgrade compatibility
 
 on:
   push:
@@ -30,6 +30,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Guard the removed remote-control surface
+        run: bash .github/scripts/check-remote-control-removed.sh
+
       - name: go vet
         run: go vet ./...
 
@@ -39,11 +42,9 @@ jobs:
           GOOS=linux GOARCH=arm64 go build ./...
           GOOS=windows GOARCH=amd64 go build ./...
 
-      - name: Remote control security tests
+      - name: Monitoring-only security tests
         run: |
-          go test ./server/ -run 'RemoteControl|Capabilities|Privilege|FileOperationsRejected' -v
-          go test ./terminal/ -run 'RemoteControl' -v
-          go test ./cmd/ -v
+          go test ./server/ -run 'Legacy|Capabilities|Privilege|ReportPayload' -v
           go test ./update/ -run 'Checksum|Verified|SelectLatestStable|CheckAndUpdate' -v
 
       # TestICMPPing, TestTCPPing and TestHTTPPing talk to public hosts and need
@@ -55,7 +56,7 @@ jobs:
           go test ./... -skip 'TestICMPPing|TestTCPPing|TestHTTPPing'
 
   installer-policy:
-    name: installer remote control policy
+    name: installer monitoring-only policy
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -141,7 +142,7 @@ jobs:
           import json
 
           log = open('/tmp/agent-disabled.log', 'rb').read().decode('utf-8', 'replace')
-          assert 'Remote control: disabled (monitoring only)' in log, log
+          assert 'remote control is not compiled into this build' in log, log
 
           # Released servers map agent.basicInfo straight onto SQL columns, so the
           # key set must not grow: an unknown key makes them answer
@@ -154,10 +155,10 @@ jobs:
           unexpected = sorted(set(info) - allowed)
           assert not unexpected, unexpected
           assert not sorted(allowed - set(info)), sorted(allowed - set(info))
-          print('OK: startup log reported the disabled mode and basic info keeps the released key set')
+          print('OK: startup log reported the monitoring-only build and basic info keeps the released key set')
           PY
 
-      - name: Run the payload tests that cover both modes
+      - name: Run the monitoring-only payload tests
         run: go test ./server/ -run 'ReportEnvelope|BasicInfo|ReportPayload|Capabilities' -v
 
   required-gate:

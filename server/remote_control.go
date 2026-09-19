@@ -2,29 +2,51 @@ package server
 
 import (
 	"encoding/json"
+	"log"
+	"time"
 
 	v2 "github.com/komari-monitor/komari-agent/protocol/v2"
 )
 
-// RemoteControlDisabled reports whether the operator disabled remote control
-// (command execution, web terminal and file manager) for this agent.
-//
-// The value is shared by the --disable-web-ssh (legacy name) and
-// --disable-remote-control flags, so both spellings keep working.
-func RemoteControlDisabled() bool {
-	return flags.DisableWebSsh
-}
+const remoteControlUnsupported = "method not supported: remote control is not compiled into this build"
 
 // Capabilities returns the capability list advertised to the server.
-//
-// Remote control disabled agents must not advertise exec/terminal/file: the
-// agent still refuses those operations locally (defense in depth), but the
-// panel should not offer them in the first place.
 func Capabilities() []string {
-	if RemoteControlDisabled() {
-		return v2.CapabilitiesMonitoringOnly()
+	return v2.CapabilitiesMonitoringOnly()
+}
+
+func isUnsupportedRemoteControlMethod(method string) bool {
+	switch method {
+	case v2.MethodAgentExec, v2.MethodAgentTerminal, v2.MethodAgentFile:
+		return true
+	default:
+		return false
 	}
-	return v2.CapabilitiesAll()
+}
+
+func rejectExecTask(taskID string) {
+	if taskID == "" {
+		log.Printf("rejected legacy exec request: %s", remoteControlUnsupported)
+		return
+	}
+	uploadTaskResult(taskID, remoteControlUnsupported, -1, time.Now())
+}
+
+func rejectFileOperation(operation v2.FileOperation) {
+	result := v2.FileResult{
+		UUID:      operation.UUID,
+		RequestID: operation.RequestID,
+		OK:        false,
+		Error:     remoteControlUnsupported,
+	}
+	payload := v2.Request{
+		JSONRPC: v2.Version,
+		Method:  v2.MethodAgentFileResult,
+		Params:  result,
+	}
+	if err := postV2RPC(payload); err != nil {
+		log.Printf("failed to return legacy file rejection: %v", err)
+	}
 }
 
 // PrivilegeLevel returns the coarse privilege level of the OS account the

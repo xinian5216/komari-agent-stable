@@ -8,7 +8,7 @@
 
 重点包括：
 
-- 来自 Server 的命令、终端、文件与任务请求；
+- 遗留 Server 命令、终端、文件请求的 fail-closed 拒绝是否可绕过；
 - Agent 以 root、Administrator 或 SYSTEM 运行时的权限提升影响；
 - WebSocket/RPC 认证、节点 Token 与更新通道；
 - 安装、迁移、自更新、校验和与 Release 供应链；

@@ -3,10 +3,7 @@ module github.com/komari-monitor/komari-agent
 go 1.25.13
 
 require (
-	github.com/UserExistsError/conpty v0.1.4
 	github.com/blang/semver v3.5.1+incompatible
-	github.com/creack/pty v1.1.24
-	github.com/go-ole/go-ole v1.2.6
 	github.com/gorilla/websocket v1.5.3
 	github.com/inconshreveable/go-update v0.0.0-20160112193335-8152e7eb6ccf
 	github.com/klauspost/cpuid/v2 v2.3.0
@@ -16,11 +13,11 @@ require (
 	github.com/spf13/cobra v1.9.1
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
-	gopkg.in/toast.v1 v1.0.0-20180812000517-0a84660828b2
 )
 
 require (
 	github.com/ebitengine/purego v0.10.0 // indirect
+	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/google/go-github/v30 v30.1.0 // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
