@@ -48,7 +48,7 @@ jobs:
         run: govulncheck -json ./... > govulncheck.json
 
       - name: Upload report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: govulncheck-${{ github.sha }}
           path: govulncheck.json
