@@ -94,7 +94,7 @@ jobs:
           After=network.target
           [Service]
           Type=simple
-          ExecStart=/opt/komari/agent -e http://127.0.0.1:25774 -t TESTTOKEN123456 -i 5 --disable-web-ssh --disable-remote-control
+          ExecStart=/opt/komari/agent -e http://127.0.0.1:25774 -t TESTTOKEN123456 -i 5 --disable-auto-update --disable-web-ssh --disable-remote-control
           WorkingDirectory=/opt/komari
           Restart=always
           [Install]
@@ -129,6 +129,7 @@ jobs:
           grep -q -- "-e http://127.0.0.1:25774" /etc/systemd/system/komari-agent.service
           grep -q -- "-t TESTTOKEN123456" /etc/systemd/system/komari-agent.service
           grep -q -- "-i 5" /etc/systemd/system/komari-agent.service
+          grep -q -- "--disable-auto-update" /etc/systemd/system/komari-agent.service
           grep -q -- "--disable-web-ssh" /etc/systemd/system/komari-agent.service
           grep -q -- "--disable-remote-control" /etc/systemd/system/komari-agent.service
           echo "OK: endpoint / token / interval / legacy no-op flags 未被改动"
