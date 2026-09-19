@@ -18,7 +18,6 @@ import (
 	"github.com/komari-monitor/komari-agent/dnsresolver"
 	"github.com/komari-monitor/komari-agent/monitoring"
 	v2 "github.com/komari-monitor/komari-agent/protocol/v2"
-	"github.com/komari-monitor/komari-agent/terminal"
 	"github.com/komari-monitor/komari-agent/utils"
 	"github.com/komari-monitor/komari-agent/ws"
 )
@@ -362,6 +361,20 @@ func handleWebSocketMessages(conn *ws.SafeConn, done chan<- struct{}) {
 			continue
 		}
 		processV2Event(conn, message.Method, message.Params, "")
+		if isUnsupportedRemoteControlMethod(message.Method) {
+			// Use a map so notification-style legacy requests receive an explicit
+			// JSON-RPC null id instead of silently omitting the response id.
+			if err := conn.WriteJSON(map[string]interface{}{
+				"jsonrpc": v2.Version,
+				"id":      message.ID,
+				"error": v2.RPCError{
+					Code:    -32601,
+					Message: remoteControlUnsupported,
+				},
+			}); err != nil {
+				log.Printf("failed to return remote-control rejection: %v", err)
+			}
+		}
 	}
 }
 
@@ -372,11 +385,10 @@ func processV2Event(conn *ws.SafeConn, method string, params interface{}, eventI
 	switch method {
 	case v2.MethodAgentExec:
 		var p struct {
-			TaskID  string `json:"task_id"`
-			Command string `json:"command"`
+			TaskID string `json:"task_id"`
 		}
 		if err := v2.BindParams(params, &p); err == nil {
-			go NewTask(p.TaskID, p.Command)
+			go rejectExecTask(p.TaskID)
 			return true
 		} else {
 			log.Printf("bad v2 exec params: %v", err)
@@ -398,7 +410,7 @@ func processV2Event(conn *ws.SafeConn, method string, params interface{}, eventI
 			RequestID string `json:"request_id"`
 		}
 		if err := v2.BindParams(params, &p); err == nil {
-			go establishTerminalConnection(flags.Token, p.RequestID, flags.Endpoint)
+			log.Printf("rejected legacy terminal request %q: %s", p.RequestID, remoteControlUnsupported)
 			return true
 		} else {
 			log.Printf("bad v2 terminal params: %v", err)
@@ -409,7 +421,7 @@ func processV2Event(conn *ws.SafeConn, method string, params interface{}, eventI
 	case v2.MethodAgentFile:
 		var operation v2.FileOperation
 		if err := v2.BindParams(params, &operation); err == nil {
-			go handleFileOperation(operation)
+			go rejectFileOperation(operation)
 			return true
 		} else {
 			log.Printf("bad v2 file params: %v", err)
@@ -418,36 +430,6 @@ func processV2Event(conn *ws.SafeConn, method string, params interface{}, eventI
 		log.Printf("unknown v2 event method %s", method)
 	}
 	return false
-}
-
-// connectWebSocket attempts to establish a WebSocket connection and upload basic info
-
-// establishTerminalConnection 建立终端连接并使用terminal包处理终端操作
-func establishTerminalConnection(token, id, endpoint string) {
-	endpoint = strings.TrimSuffix(endpoint, "/") + "/api/clients/terminal?token=" + token + "&id=" + id
-	endpoint = "ws" + strings.TrimPrefix(endpoint, "http")
-
-	// 转换中文域名为 ASCII 兼容编码
-	if convertedEndpoint, err := utils.ConvertIDNToASCII(endpoint); err == nil {
-		endpoint = convertedEndpoint
-	} else {
-		log.Printf("Warning: Failed to convert Terminal WebSocket IDN to ASCII: %v", err)
-	}
-
-	// 使用与主 WS 相同的拨号策略
-	dialer := newWSDialer()
-
-	conn, _, err := dialer.Dial(endpoint, nil)
-	if err != nil {
-		log.Println("Failed to establish terminal connection:", err)
-		return
-	}
-
-	// 启动终端
-	terminal.StartTerminal(conn, id)
-	if conn != nil {
-		conn.Close()
-	}
 }
 
 // newWSDialer 构造统一的 WebSocket 拨号器（自定义解析、IPv4/IPv6 动态排序、可选 TLS 忽略）

@@ -17,95 +17,87 @@ func timeAfterSeconds(seconds int) <-chan time.Time {
 	return time.After(time.Duration(seconds) * time.Second)
 }
 
-// TestExecTaskRefusedWhenRemoteControlDisabled proves the agent execution path
-// stops before any command runs and reports the refusal to the server.
-func TestExecTaskRefusedWhenRemoteControlDisabled(t *testing.T) {
-	type captured struct {
-		result   string
-		exitCode int
-	}
-
-	results := make(chan captured, 1)
+func captureLegacyRejectionServer(t *testing.T) (<-chan v2.Request, func()) {
+	t.Helper()
+	requests := make(chan v2.Request, 4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			Method string          `json:"method"`
-			Params json.RawMessage `json:"params"`
+		var req v2.Request
+		if err := json.Unmarshal(body, &req); err == nil {
+			requests <- req
 		}
-		if err := json.Unmarshal(body, &req); err == nil && req.Method == v2.MethodAgentTaskResult {
-			var params struct {
-				Result   string `json:"result"`
-				ExitCode int    `json:"exit_code"`
-			}
-			if err := json.Unmarshal(req.Params, &params); err == nil {
-				results <- captured{result: params.Result, exitCode: params.ExitCode}
-			}
-		}
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
-	defer srv.Close()
-
 	originalEndpoint, originalToken := pkg_flags.GlobalConfig.Endpoint, pkg_flags.GlobalConfig.Token
 	originalCompression := pkg_flags.GlobalConfig.DisableCompression
 	pkg_flags.GlobalConfig.Endpoint = srv.URL
 	pkg_flags.GlobalConfig.Token = "test-token"
 	pkg_flags.GlobalConfig.DisableCompression = true
-	t.Cleanup(func() {
+	cleanup := func() {
 		pkg_flags.GlobalConfig.Endpoint = originalEndpoint
 		pkg_flags.GlobalConfig.Token = originalToken
 		pkg_flags.GlobalConfig.DisableCompression = originalCompression
-	})
+		srv.Close()
+	}
+	return requests, cleanup
+}
 
-	setRemoteControlDisabled(t, true)
-	NewTask("task-id", "echo this must not run")
-
+func TestLegacyExecRequestIsRejectedWithoutExecution(t *testing.T) {
+	requests, cleanup := captureLegacyRejectionServer(t)
+	defer cleanup()
+	if handled := processV2Event(nil, v2.MethodAgentExec, map[string]interface{}{
+		"task_id": "task-id", "command": "touch /tmp/this-must-never-run",
+	}, "event-exec"); !handled {
+		t.Fatal("legacy exec request was not handled as a rejection")
+	}
 	select {
-	case got := <-results:
-		if !strings.Contains(got.result, "Remote control is disabled") {
-			t.Fatalf("task result = %q, want the remote control refusal", got.result)
+	case req := <-requests:
+		if req.Method != v2.MethodAgentTaskResult {
+			t.Fatalf("method = %q, want task result rejection", req.Method)
 		}
-		if got.exitCode != -1 {
-			t.Fatalf("exit code = %d, want -1", got.exitCode)
+		var result v2.TaskResultParams
+		if err := v2.BindParams(req.Params, &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.ExitCode != -1 || !strings.Contains(result.Result, "method not supported") {
+			t.Fatalf("unexpected exec rejection: %+v", result)
 		}
 	case <-timeAfterSeconds(5):
-		t.Fatal("no task result was uploaded")
+		t.Fatal("no exec rejection was uploaded")
 	}
 }
 
-// TestExecTaskStillRunsWhenRemoteControlEnabled is the control case: without the
-// flag the execution path stays untouched.
-func TestExecTaskStillRunsWhenRemoteControlEnabled(t *testing.T) {
-	results := make(chan string, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		results <- string(body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	originalEndpoint, originalToken := pkg_flags.GlobalConfig.Endpoint, pkg_flags.GlobalConfig.Token
-	originalCompression := pkg_flags.GlobalConfig.DisableCompression
-	pkg_flags.GlobalConfig.Endpoint = srv.URL
-	pkg_flags.GlobalConfig.Token = "test-token"
-	pkg_flags.GlobalConfig.DisableCompression = true
-	t.Cleanup(func() {
-		pkg_flags.GlobalConfig.Endpoint = originalEndpoint
-		pkg_flags.GlobalConfig.Token = originalToken
-		pkg_flags.GlobalConfig.DisableCompression = originalCompression
-	})
-
-	setRemoteControlDisabled(t, false)
-	NewTask("task-id", "echo hello")
-
+func TestLegacyFileRequestIsRejectedWithoutFilesystemAccess(t *testing.T) {
+	requests, cleanup := captureLegacyRejectionServer(t)
+	defer cleanup()
+	if handled := processV2Event(nil, v2.MethodAgentFile, map[string]interface{}{
+		"uuid": "node-id", "request_id": "request-id", "op": "delete",
+		"args": map[string]interface{}{"path": "/"},
+	}, "event-file"); !handled {
+		t.Fatal("legacy file request was not handled as a rejection")
+	}
 	select {
-	case body := <-results:
-		if strings.Contains(body, "Remote control is disabled") {
-			t.Fatalf("enabled agent refused the task: %s", body)
+	case req := <-requests:
+		if req.Method != v2.MethodAgentFileResult {
+			t.Fatalf("method = %q, want file result rejection", req.Method)
 		}
-		if !strings.Contains(body, "hello") {
-			t.Fatalf("task output was not reported: %s", body)
+		var result v2.FileResult
+		if err := v2.BindParams(req.Params, &result); err != nil {
+			t.Fatal(err)
 		}
-	case <-timeAfterSeconds(10):
-		t.Fatal("no task result was uploaded")
+		if result.OK || !strings.Contains(result.Error, "method not supported") {
+			t.Fatalf("unexpected file rejection: %+v", result)
+		}
+	case <-timeAfterSeconds(5):
+		t.Fatal("no file rejection was uploaded")
+	}
+}
+
+func TestLegacyTerminalRequestIsAcknowledgedAndRejectedLocally(t *testing.T) {
+	if handled := processV2Event(nil, v2.MethodAgentTerminal, map[string]interface{}{
+		"request_id": "terminal-id",
+	}, "event-terminal"); !handled {
+		t.Fatal("legacy terminal request was not handled as a fail-closed rejection")
 	}
 }

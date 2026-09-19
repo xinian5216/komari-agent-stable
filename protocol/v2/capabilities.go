@@ -1,18 +1,10 @@
 package v2
 
-// Capability names advertised by the agent to the server.
-//
-// The list is the single source of truth for what the panel may ask this agent
-// to do. When remote control is disabled the agent must not advertise exec,
-// terminal or file so that the panel can disable those features up front
-// instead of letting the user click and be refused by the agent.
+// Capability names advertised by the monitoring-only agent to the server.
 const (
-	CapabilityPing     = "ping"
-	CapabilityMessage  = "message"
-	CapabilityEvent    = "event"
-	CapabilityExec     = "exec"
-	CapabilityTerminal = "terminal"
-	CapabilityFile     = "file"
+	CapabilityPing    = "ping"
+	CapabilityMessage = "message"
+	CapabilityEvent   = "event"
 )
 
 // PrivilegeLevel is a coarse-grained description of the OS account the agent
@@ -27,20 +19,9 @@ const (
 	PrivilegeLevelUnknown  PrivilegeLevel = "unknown"
 )
 
-// CapabilitiesMonitoringOnly lists the capabilities that stay available when
-// remote control is disabled.
+// CapabilitiesMonitoringOnly is the complete capability set compiled into this
+// fork. Remote command, terminal and file capabilities intentionally do not
+// exist here, so they cannot accidentally be advertised again.
 func CapabilitiesMonitoringOnly() []string {
 	return []string{CapabilityPing, CapabilityMessage, CapabilityEvent}
-}
-
-// CapabilitiesRemoteControl lists the capabilities that remote control adds.
-func CapabilitiesRemoteControl() []string {
-	return []string{CapabilityExec, CapabilityTerminal, CapabilityFile}
-}
-
-// CapabilitiesAll lists the full capability set of an agent running with
-// remote control enabled, in the order used on the wire.
-func CapabilitiesAll() []string {
-	caps := CapabilitiesMonitoringOnly()
-	return append(caps, CapabilitiesRemoteControl()...)
 }

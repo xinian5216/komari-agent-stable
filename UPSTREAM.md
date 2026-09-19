@@ -25,8 +25,8 @@
 
 ## 3. 本 fork 的改动（相对上游基线）
 
-初始目的为建立本 fork 自己的安装、更新与 Release 来源；后续在不破坏 v2 兼容性的前提下，加入了
-远控最小权限、能力上报和供应链校验。所有新增协议字段均为可选字段。
+初始目的为建立本 fork 自己的安装、更新与 Release 来源；后续在不破坏 v2 兼容性的前提下，将 Agent
+收敛为纯监控探针，并加入能力上报和供应链校验。所有新增协议字段均为可选字段。
 
 1. `install.sh` / `install.ps1`：owner/repo 集中为脚本顶部的 `REPO_OWNER` / `REPO_NAME` /
    `GITHUB_API_BASE` / `GITHUB_RELEASE_BASE`（可用环境变量覆盖），并把所有 GitHub API 与
@@ -39,15 +39,19 @@
    本 fork，并支持状态检查与回滚。
 5. 安装、迁移和自更新加入发布校验和验证；缺失或不匹配时 fail closed，并兼容单资产 `.sha256` 与
    `SHA256SUMS`。
-6. 新安装默认仅监控，远程命令、终端和文件能力改为显式 opt-in；增加本地高权限警告、
-   `--disable-remote-control` 别名及 Linux/Windows 权限识别。
-7. v2 `agent.report` 新增可选的 `capabilities` / `privilege_level` 上报，Server 与 Web 据此实施门禁；
+6. 删除通用命令执行、PTY/Web 终端、任意文件管理与传输实现；`agent.exec`、`agent.terminal.request`、
+   `agent.file` 只保留协议标识并 fail closed，发布二进制不再编译这些能力。
+7. `--disable-web-ssh`、`--disable-remote-control` 和 `AGENT_DISABLE_WEB_SSH` 暂留一个发布周期作为隐藏
+   no-op，保证旧 systemd/Windows 服务原地升级后仍能启动；安装器不再提供启用远控的选择。
+8. v2 `agent.report` 新增可选的 `capabilities` / `privilege_level` 上报，且 capability 永远仅包含
+   `ping`、`message`、`event`；
    旧端忽略新字段时保持兼容。
-8. Release / Docker / Snapshot 加入不可变资产守卫、校验和、真实迁移测试及供应链硬门禁。
+9. Release / Docker / Snapshot 加入不可变资产守卫、校验和、真实迁移测试及供应链硬门禁。
 
 ## 4. 兼容性边界
 
 - **v2 既有协议不变**：已有方法和字段未改名或删除；新增 capability 字段可选，旧 Server/Agent 可忽略。
+- 遗留远控方法名只用于识别并拒绝旧 Server 请求，不代表实现或 capability 仍然存在。
 - 监控数据语义、采集周期、节点 token 与 endpoint 格式保持不变。
 - Go module path 仍为 `github.com/komari-monitor/komari-agent`（改 module path 会波及全仓库
   import 并破坏与上游的对照关系）。

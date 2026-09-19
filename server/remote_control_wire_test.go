@@ -8,7 +8,6 @@ import (
 	v2 "github.com/komari-monitor/komari-agent/protocol/v2"
 )
 
-// reportEnvelope mirrors the envelope the agent puts on the wire.
 type reportEnvelope struct {
 	Method string `json:"method"`
 	Params struct {
@@ -16,70 +15,28 @@ type reportEnvelope struct {
 	} `json:"params"`
 }
 
-// TestReportEnvelopeCarriesCapabilities exercises the exact bytes the agent
-// sends, end to end: the monitoring report builder, the capability augmentation
-// and the JSON-RPC envelope.
-func TestReportEnvelopeCarriesCapabilities(t *testing.T) {
-	cases := []struct {
-		name     string
-		disabled bool
-		want     []string
-	}{
-		{"monitoring only", true, []string{"ping", "message", "event"}},
-		{"remote control enabled", false, []string{"ping", "message", "event", "exec", "terminal", "file"}},
+func TestReportEnvelopeCarriesOnlyMonitoringCapabilities(t *testing.T) {
+	payload := v2.BuildReportPayload(reportPayload(monitoring.GenerateReport()))
+	var envelope reportEnvelope
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatalf("report envelope is not valid JSON: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setRemoteControlDisabled(t, tc.disabled)
-
-			payload := v2.BuildReportPayload(reportPayload(monitoring.GenerateReport()))
-
-			var envelope reportEnvelope
-			if err := json.Unmarshal(payload, &envelope); err != nil {
-				t.Fatalf("report envelope is not valid JSON: %v", err)
-			}
-			if envelope.Method != v2.MethodAgentReport {
-				t.Fatalf("method = %q, want %q", envelope.Method, v2.MethodAgentReport)
-			}
-
-			report := envelope.Params.Report
-			for _, metric := range []string{"cpu", "ram", "disk", "load", "network", "uptime"} {
-				if _, ok := report[metric]; !ok {
-					t.Fatalf("metric %q was lost from the report: %v", metric, report)
-				}
-			}
-
-			raw, ok := report["capabilities"].([]interface{})
-			if !ok {
-				t.Fatalf("capabilities missing from the report: %v", report)
-			}
-			got := make([]string, 0, len(raw))
-			for _, item := range raw {
-				text, ok := item.(string)
-				if !ok {
-					t.Fatalf("capability %v is not a string", item)
-				}
-				got = append(got, text)
-			}
-			if len(got) != len(tc.want) {
-				t.Fatalf("capabilities = %v, want %v", got, tc.want)
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Fatalf("capabilities = %v, want %v", got, tc.want)
-				}
-			}
-
-			privilege, ok := report["privilege_level"].(string)
-			if !ok {
-				t.Fatalf("privilege level missing from the report: %v", report)
-			}
-			switch privilege {
-			case "elevated", "standard", "unknown":
-			default:
-				t.Fatalf("privilege level = %q", privilege)
-			}
-		})
+	if envelope.Method != v2.MethodAgentReport {
+		t.Fatalf("method = %q, want %q", envelope.Method, v2.MethodAgentReport)
+	}
+	for _, metric := range []string{"cpu", "ram", "disk", "load", "network", "uptime"} {
+		if _, ok := envelope.Params.Report[metric]; !ok {
+			t.Fatalf("metric %q was lost", metric)
+		}
+	}
+	raw, ok := envelope.Params.Report["capabilities"].([]interface{})
+	if !ok || len(raw) != 3 {
+		t.Fatalf("capabilities = %v, want ping/message/event", raw)
+	}
+	want := []string{"ping", "message", "event"}
+	for i, item := range raw {
+		if item != want[i] {
+			t.Fatalf("capabilities = %v, want %v", raw, want)
+		}
 	}
 }
