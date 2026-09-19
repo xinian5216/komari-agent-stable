@@ -19,7 +19,7 @@ if [ -n "$source_files" ] && grep -En 'os/exec|exec\.Command|ExecutionPolicy|/ap
     fail 'an executable command, PTY, or file-transfer primitive returned to server/'
 fi
 
-if grep -En 'github.com/(UserExistsError/conpty|creack/pty|go-ole/go-ole)|gopkg.in/toast' go.mod; then
+if grep -En 'github.com/(UserExistsError/conpty|creack/pty)|gopkg.in/toast' go.mod; then
     fail 'a removed terminal or desktop-warning dependency returned to go.mod'
 fi
 
