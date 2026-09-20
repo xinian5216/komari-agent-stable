@@ -47,6 +47,8 @@
    `ping`、`message`、`event`；
    旧端忽略新字段时保持兼容。
 9. Release / Docker / Snapshot 加入不可变资产守卫、校验和、真实迁移测试及供应链硬门禁。
+10. 删除仅监听不存在 `main` 分支的遗留 `build.yml`；所有第三方 GitHub Actions 固定到完整 commit
+    SHA，并由 `supply-chain-ci` 自动拒绝浮动 tag 和缺失精确版本注释的引用。
 
 ## 4. 兼容性边界
 
