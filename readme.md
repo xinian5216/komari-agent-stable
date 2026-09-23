@@ -66,7 +66,7 @@ export AGENT_TOKEN="your-token"
 ./komari-agent --help
 ```
 
-详见 `cmd/flags/flags.go` 及 `cmd/root.go`
+配置结构与环境变量映射见 `cmd/flags/flag.go`；CLI 参数及覆盖顺序见 `cmd/root.go`
 
 ## 安全边界：仅监控
 
