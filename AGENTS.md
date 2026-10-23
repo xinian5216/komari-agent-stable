@@ -8,6 +8,8 @@
 1. `UPSTREAM.md`：上游基线与 fork 实际差异；
 2. `readme.md`：参数、安装、迁移和回滚约定；
 3. 按任务读取 `protocol/v2/`、`server/`、`update/`、安装脚本及对应 CI。
+4. 提交 / CI / 发布任务读取 `.github/REQUIRED_CHECKS.md` 和 `.github/workflows/README.md`；
+   工具链和扫描工具版本以 `go.mod` 与相关 workflow 为准，不在本文件重复维护版本号。
 
 禁止先递归扫描全仓库；先沿任务入口定位相关文件。
 
@@ -33,11 +35,28 @@
 ## 提交前检查
 
 ```bash
-go test ./... -count=1
+go test ./... -count=1 -skip 'TestICMPPing|TestTCPPing|TestHTTPPing'
 go vet ./...
+govulncheck ./...
+bash .github/scripts/check-remote-control-removed.sh
 bash .github/tests/test-install-remote-control.sh
 bash .github/tests/test-supply-chain.sh
 bash .github/tests/test-release-guard.sh
+python3 .github/scripts/check-workflow-pins.py
+gitleaks git . --log-opts="--all" --redact
+gitleaks dir . --redact
 ```
 
-涉及 Windows 的代码还需由对应 CI 验证。提交保持单一目的，禁止 force push、重写 tag 或覆盖 Release。
+govulncheck 与 gitleaks 使用安全 workflow 固定的版本。三个跳过的 Ping 测试依赖公网或原始
+套接字权限，需要时在具备条件的环境另行运行完整测试并分别报告；不得据此跳过其它回归。
+安装器 shell 测试涉及临时服务 / 提权，应按 CI 在隔离环境执行，不能在生产主机直接运行。
+涉及 Windows 的代码还需验证对应构建 / 安装路径。提交保持单一目的，禁止 force push、重写 tag 或覆盖 Release。
+
+## 合并与发布
+
+- 所有变更经 PR 进入 `stable`，等待 `.github/REQUIRED_CHECKS.md` 的全部门禁（含供应链门禁）
+  成功；失败、取消、跳过均不算通过，CodeQL 成功不能代替 govulncheck。
+- 发布前复核合并后精确 commit 的检查与 tag 目标；发布后核对平台资产、校验和、
+  内嵌版本及镜像平台。正式版本与 Snapshot 分开，不能让预发布进入 stable 自动更新通道。
+- 推送、合并、发布与部署按本次任务明确授权的范围执行；已获授权无需重复确认。
+  仓库发布与线上安装 / 升级分别授权，测试不得使用真实 endpoint、token 或用户数据。
