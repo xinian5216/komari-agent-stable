@@ -46,8 +46,8 @@ log_config() {
     echo -e "${CYAN}[CONFIG]${NC} $1"
 }
 
-# $EUID 是 bash 专有变量, ash/dash 下未定义, 补 POSIX 回退
-EUID=${EUID:-$(id -u)}
+# Read Bash EUID without assigning to it; fall back to id for ash/dash.
+CURRENT_UID=${EUID:-$(id -u)}
 
 # Default values
 service_name="komari-agent"
@@ -70,7 +70,7 @@ case $os_type in
         os_name="darwin"
         target_dir="/usr/local/komari"  # Use /usr/local on macOS
         # Check if we can write to /usr/local, fallback to user directory
-        if [ ! -w "/usr/local" ] && [ "$EUID" -ne 0 ]; then
+        if [ ! -w "/usr/local" ] && [ "$CURRENT_UID" -ne 0 ]; then
             target_dir="$HOME/.komari"
             log_info "No write permission to /usr/local, using user directory: $target_dir"
         fi
@@ -141,7 +141,7 @@ done
 komari_args="${komari_args# }"
 
 # A direct, unprivileged installation belongs entirely to the invoking user.
-if [ "$EUID" -ne 0 ] && [ "$install_dir_specified" = false ]; then
+if [ "$CURRENT_UID" -ne 0 ] && [ "$install_dir_specified" = false ]; then
     case "$os_name" in
         linux|freebsd)
             target_dir="${XDG_DATA_HOME:-$HOME/.local/share}/komari"
@@ -152,7 +152,7 @@ fi
 komari_agent_path="${target_dir}/agent"
 
 # User services are the only service type a non-root Linux installation can manage.
-if [ "$EUID" -ne 0 ] && [ "$os_name" = "linux" ]; then
+if [ "$CURRENT_UID" -ne 0 ] && [ "$os_name" = "linux" ]; then
     if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
         user_service=true
     else
@@ -251,7 +251,7 @@ install_dependencies() {
     done
 
     if [ -n "$missing_deps" ]; then
-        if [ "$EUID" -ne 0 ]; then
+        if [ "$CURRENT_UID" -ne 0 ]; then
             log_error "Missing required dependencies:$missing_deps"
             log_info "Install them with your system package manager, then run this script again."
             exit 1
@@ -413,7 +413,7 @@ fi
 
 log_step "Creating installation directory: ${GREEN}$target_dir${NC}"
 mkdir -p "$target_dir"
-if [ "$EUID" -eq 0 ] && [ "$service_user" != "root" ]; then
+if [ "$CURRENT_UID" -eq 0 ] && [ "$service_user" != "root" ]; then
     chown "$service_user" "$target_dir"
 fi
 
@@ -587,7 +587,7 @@ uninstall_previous
 # Set executable permissions on the verified download, then move it into place
 chmod +x "$download_tmp"
 mv -f "$download_tmp" "$komari_agent_path"
-if [ "$EUID" -eq 0 ] && [ "$service_user" != "root" ]; then
+if [ "$CURRENT_UID" -eq 0 ] && [ "$service_user" != "root" ]; then
     chown "$service_user" "$komari_agent_path"
 fi
 log_success "Komari-agent installed to ${GREEN}$komari_agent_path${NC}"
@@ -837,7 +837,7 @@ elif [ "$init_system" = "launchd" ]; then
     case "$target_dir" in
         /Users/*) is_user_install=true ;;
     esac
-    [ "$EUID" -ne 0 ] && is_user_install=true
+    [ "$CURRENT_UID" -ne 0 ] && is_user_install=true
     
     if [ "$is_user_install" = true ]; then
         # User-level service (LaunchAgent)
