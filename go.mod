@@ -1,6 +1,6 @@
 module github.com/komari-monitor/komari-agent
 
-go 1.26.10
+go 1.26.11
 
 require (
 	github.com/blang/semver v3.5.1+incompatible
